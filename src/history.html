@@ -1,0 +1,254 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>huanhuan 聊天记录</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+
+    body {
+      width: 100%;
+      height: 100%;
+      background: #f5f5f5;
+      font-family: -apple-system, BlinkMacSystemFont, sans-serif;
+      overflow: hidden;
+    }
+
+    #container {
+      display: flex;
+      width: 100%;
+      height: 100vh;
+    }
+
+    #session-list {
+      width: 250px;
+      background: #fff;
+      border-right: 1px solid #e0e0e0;
+      overflow-y: auto;
+      padding: 10px;
+    }
+
+    .session-item {
+      padding: 12px;
+      margin-bottom: 8px;
+      background: #f9f9f9;
+      border-radius: 6px;
+      cursor: pointer;
+      border-left: 3px solid transparent;
+      transition: all 0.2s;
+    }
+
+    .session-item:hover {
+      background: #f0f0f0;
+    }
+
+    .session-item.active {
+      background: #e3f2fd;
+      border-left-color: #2196f3;
+    }
+
+    .session-title {
+      font-weight: 500;
+      color: #333;
+      font-size: 13px;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .session-time {
+      font-size: 11px;
+      color: #999;
+      margin-top: 4px;
+    }
+
+    #chat-view {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      background: #fff;
+    }
+
+    #chat-header {
+      padding: 15px;
+      border-bottom: 1px solid #e0e0e0;
+      background: #fafafa;
+    }
+
+    #chat-header-title {
+      font-size: 14px;
+      font-weight: 500;
+      color: #333;
+    }
+
+    #chat-messages {
+      flex: 1;
+      overflow-y: auto;
+      padding: 15px;
+    }
+
+    .message {
+      margin-bottom: 15px;
+      animation: fadeIn 0.3s ease;
+    }
+
+    @keyframes fadeIn {
+      from { opacity: 0; transform: translateY(10px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+
+    .message.user {
+      text-align: right;
+    }
+
+    .message-content {
+      display: inline-block;
+      max-width: 70%;
+      padding: 10px 14px;
+      border-radius: 8px;
+      font-size: 13px;
+      line-height: 1.5;
+      word-wrap: break-word;
+    }
+
+    .message.user .message-content {
+      background: #2196f3;
+      color: #fff;
+    }
+
+    .message.assistant .message-content {
+      background: #e8e8e8;
+      color: #333;
+    }
+
+    .message-time {
+      font-size: 11px;
+      color: #999;
+      margin-top: 4px;
+    }
+
+    #empty-state {
+      flex: 1;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: #999;
+      font-size: 14px;
+    }
+
+    #loading {
+      flex: 1;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: #999;
+    }
+  </style>
+</head>
+<body>
+  <div id="container">
+    <div id="session-list"></div>
+    <div id="chat-view">
+      <div id="chat-header" style="display: none;">
+        <div id="chat-header-title"></div>
+      </div>
+      <div id="chat-messages">
+        <div id="loading">加载中...</div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    const { invoke } = window.__TAURI__.core;
+
+    let sessions = [];
+    let currentSession = null;
+
+    async function loadSessions() {
+      try {
+        sessions = await invoke('get_all_sessions');
+        renderSessionList();
+        if (sessions.length > 0) {
+          selectSession(sessions[0].id);
+        } else {
+          document.getElementById('chat-messages').innerHTML = '<div id="empty-state">暂无聊天记录</div>';
+        }
+      } catch (err) {
+        console.error('Failed to load sessions:', err);
+        document.getElementById('chat-messages').innerHTML = `<div id="empty-state">加载失败: ${err}</div>`;
+      }
+    }
+
+    function renderSessionList() {
+      const listDiv = document.getElementById('session-list');
+      listDiv.innerHTML = '';
+
+      sessions.forEach(session => {
+        const item = document.createElement('div');
+        item.className = 'session-item';
+        item.innerHTML = `
+          <div class="session-title">${session.title}</div>
+          <div class="session-time">${new Date(session.createdAt).toLocaleString('zh-CN')}</div>
+        `;
+        item.addEventListener('click', () => selectSession(session.id));
+        listDiv.appendChild(item);
+      });
+    }
+
+    async function selectSession(sessionId) {
+      try {
+        currentSession = await invoke('get_session', { sessionId });
+        renderSession();
+
+        // 更新 UI 状态
+        document.querySelectorAll('.session-item').forEach(item => {
+          item.classList.remove('active');
+        });
+        event.target.closest('.session-item').classList.add('active');
+      } catch (err) {
+        console.error('Failed to load session:', err);
+      }
+    }
+
+    function renderSession() {
+      if (!currentSession) return;
+
+      const header = document.getElementById('chat-header');
+      const title = document.getElementById('chat-header-title');
+      const messagesDiv = document.getElementById('chat-messages');
+
+      header.style.display = 'block';
+      title.textContent = currentSession.title;
+
+      let html = '';
+      currentSession.messages.forEach(msg => {
+        const role = msg.role;
+        html += `
+          <div class="message ${role}">
+            <div class="message-content">${escapeHtml(msg.text)}</div>
+            <div class="message-time">${msg.time}</div>
+          </div>
+        `;
+      });
+
+      messagesDiv.innerHTML = html;
+      messagesDiv.scrollTop = messagesDiv.scrollHeight;
+    }
+
+    function escapeHtml(text) {
+      const map = {
+        '&': '&amp;',
+        '<': '&lt;',
+        '>': '&gt;',
+        '"': '&quot;',
+        "'": '&#039;'
+      };
+      return text.replace(/[&<>"']/g, m => map[m]);
+    }
+
+    // 初始化
+    loadSessions();
+  </script>
+</body>
+</html>
