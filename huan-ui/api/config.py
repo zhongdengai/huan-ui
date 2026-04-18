@@ -33,10 +33,10 @@ TLS_CERT = os.getenv('HERMES_WEBUI_TLS_CERT', '').strip() or None
 TLS_KEY = os.getenv('HERMES_WEBUI_TLS_KEY', '').strip() or None
 TLS_ENABLED = TLS_CERT is not None and TLS_KEY is not None
 
-# ── State directory (env-overridable, never inside repo) ──────────────────────
+# ── State directory (env-overridable, 现在存储在项目内) ────────────────────
 STATE_DIR = Path(os.getenv(
     'HERMES_WEBUI_STATE_DIR',
-    str(HOME / '.hermes' / 'webui')
+    str(REPO_ROOT / 'webui')
 )).expanduser().resolve()
 
 SESSION_DIR           = STATE_DIR / 'sessions'

@@ -1,0 +1,15 @@
+{
+  "default_model": "@minimax:MiniMax-M2.7",
+  "default_workspace": "/Users/jiaqi/.hermes/webui/workspace",
+  "send_key": "enter",
+  "show_token_usage": true,
+  "show_cli_sessions": false,
+  "sync_to_insights": false,
+  "check_for_updates": false,
+  "theme": "slate",
+  "language": "zh",
+  "bot_name": "欢欢",
+  "sound_enabled": false,
+  "notifications_enabled": false,
+  "password_hash": null
+}

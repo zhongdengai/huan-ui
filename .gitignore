@@ -1,0 +1,50 @@
+# Node.js
+node_modules/
+npm-debug.log
+yarn-error.log
+
+# Rust
+target/
+Cargo.lock
+*.rlib
+
+# Python
+.venv/
+venv/
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+dist/
+build/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Logs
+*.log
+*.log.*
+
+# Runtime data (user sessions, generated files)
+huan-ui/webui/sessions/*.json
+huan-ui/webui/_index.json
+huan-ui/webui/last_workspace.txt
+huan-ui/webui/current_character.txt
+
+# But keep the webui directory structure
+!huan-ui/webui/
+!huan-ui/webui/sessions/
+!huan-ui/webui/.gitkeep
+
+# OS
+.DS_Store
+Thumbs.db
