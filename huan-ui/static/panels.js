@@ -1466,10 +1466,15 @@ async function saveCharacter(charId, nameInput, descInput, promptInput) {
         } catch (e) {
           console.warn('Could not update bot name:', e.message);
         }
-      }
 
-      // Refresh the character list
-      await loadCharacters();
+        // Reload page to sync all UI including desktop app menu
+        setTimeout(() => {
+          location.reload();
+        }, 500);
+      } else {
+        // Refresh the character list without full page reload
+        await loadCharacters();
+      }
     }
   } catch (e) {
     showToast('Error saving character: ' + e.message);
