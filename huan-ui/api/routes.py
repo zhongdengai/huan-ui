@@ -5,7 +5,9 @@ Extracted from server.py (Sprint 11) so server.py is a thin shell.
 import html as _html
 import json
 import os
+import platform
 import queue
+import subprocess
 import sys
 import threading
 import time
@@ -506,12 +508,19 @@ def handle_post(handler, parsed) -> bool:
 
     # ── Character management (POST) ──
     if parsed.path.startswith('/api/characters/'):
-        if parsed.path == '/api/characters/switch' or parsed.path.endswith('/switch'):
+        if parsed.path == '/api/characters/create':
+            return _handle_character_create(handler, body)
+        elif parsed.path == '/api/characters/delete' or parsed.path.endswith('/delete'):
+            return _handle_character_delete(handler, body, parsed)
+        elif parsed.path == '/api/characters/switch' or parsed.path.endswith('/switch'):
             # Match both /api/characters/switch and /api/characters/{id}/switch
             return _handle_character_switch(handler, body, parsed)
         elif parsed.path == '/api/characters/update' or parsed.path.endswith('/update'):
             # Match both /api/characters/update and /api/characters/{id}/update
             return _handle_character_update(handler, body, parsed)
+        elif parsed.path.endswith('/open-folder'):
+            # Match /api/characters/{id}/open-folder
+            return _handle_character_open_folder(handler, body, parsed)
 
     if parsed.path == '/api/session/update':
         try: require(body, 'session_id')
@@ -1661,6 +1670,15 @@ def _handle_character_switch(handler, body, parsed):
     # Save as active character
     _save_active_character(character_id)
 
+    # 🆕 Switch Hermes profile to use this character's SOUL.md and MEMORY.md
+    try:
+        from api.profiles import switch_profile
+        switch_profile(character_id)
+        print(f"[webui] ✓ Switched Hermes profile to: {character_id}", flush=True)
+    except Exception as e:
+        print(f"[webui] ⚠️  Could not switch Hermes profile: {e}", flush=True)
+        # Don't fail the API call if profile switch fails — character still switched
+
     return j(handler, {
         'ok': True,
         'active': character_id,
@@ -1716,6 +1734,235 @@ def _handle_character_update(handler, body, parsed):
             'frames_count': config.get('frames_count', 0),
         }
     })
+
+
+def _setup_character_configs(character_id, char_dir, system_prompt):
+    """
+    自动为新建的人物配置所有必需的文件和目录。
+    复制 config.yaml, auth.json, skills 等从 ~/.hermes/
+    """
+    import shutil
+
+    hermes_home = Path.home() / '.hermes'
+
+    try:
+        # 1️⃣ 复制 config.yaml (Hermes 配置)
+        hermes_config = hermes_home / 'config.yaml'
+        if hermes_config.exists():
+            shutil.copy2(str(hermes_config), str(char_dir / 'config.yaml'))
+            print(f"[setup] ✓ 复制 config.yaml 到 {character_id}", flush=True)
+
+        # 2️⃣ 复制 auth.json (API keys)
+        hermes_auth = hermes_home / 'auth.json'
+        if hermes_auth.exists():
+            shutil.copy2(str(hermes_auth), str(char_dir / 'auth.json'))
+            print(f"[setup] ✓ 复制 auth.json 到 {character_id}", flush=True)
+
+        # 3️⃣ 复制 skills 目录
+        hermes_skills = hermes_home / 'skills'
+        if hermes_skills.exists():
+            dest_skills = char_dir / 'skills'
+            if dest_skills.exists():
+                shutil.rmtree(str(dest_skills))
+            shutil.copytree(str(hermes_skills), str(dest_skills))
+            print(f"[setup] ✓ 复制 skills 目录到 {character_id}", flush=True)
+
+        # 4️⃣ 复制 skills_disabled 目录
+        hermes_skills_disabled = hermes_home / 'skills_disabled'
+        if hermes_skills_disabled.exists():
+            dest_skills_disabled = char_dir / 'skills_disabled'
+            if dest_skills_disabled.exists():
+                shutil.rmtree(str(dest_skills_disabled))
+            shutil.copytree(str(hermes_skills_disabled), str(dest_skills_disabled))
+            print(f"[setup] ✓ 复制 skills_disabled 目录到 {character_id}", flush=True)
+
+        # 5️⃣ 创建 SOUL.md (角色性格定义)
+        soul_file = char_dir / 'SOUL.md'
+        if not soul_file.exists():
+            soul_file.write_text(system_prompt if system_prompt else f"你是{character_id}，一个有趣的AI助手。\n")
+            print(f"[setup] ✓ 创建 SOUL.md 到 {character_id}", flush=True)
+
+        # 6️⃣ 创建 MEMORY.md (角色记忆库)
+        memory_file = char_dir / 'MEMORY.md'
+        if not memory_file.exists():
+            memory_file.write_text(f"# {character_id} 的记忆库\n\n这里会存储与{character_id}的对话记忆和学习内容。\n")
+            print(f"[setup] ✓ 创建 MEMORY.md 到 {character_id}", flush=True)
+
+        # 7️⃣ 创建 USER.md (用户信息)
+        user_file = char_dir / 'USER.md'
+        if not user_file.exists():
+            user_file.write_text(f"# 用户信息\n\n与{character_id}互动的用户相关信息。\n")
+            print(f"[setup] ✓ 创建 USER.md 到 {character_id}", flush=True)
+
+        # 8️⃣ 创建符号链接到 ~/.hermes/profiles/
+        profiles_dir = hermes_home / 'profiles'
+        profiles_dir.mkdir(exist_ok=True)
+        profile_link = profiles_dir / character_id
+
+        # 删除已存在的符号链接
+        if profile_link.exists() or profile_link.is_symlink():
+            os.unlink(str(profile_link))
+
+        # 创建新的符号链接
+        os.symlink(str(char_dir), str(profile_link))
+        print(f"[setup] ✓ 创建符号链接 ~/.hermes/profiles/{character_id} → {char_dir}", flush=True)
+
+        # 9️⃣ 创建必需的子目录
+        for subdir in ['memories', 'sessions', 'logs', 'cron', 'webui_state']:
+            (char_dir / subdir).mkdir(exist_ok=True)
+        print(f"[setup] ✓ 创建子目录 (memories, sessions, logs, cron, webui_state)", flush=True)
+
+        print(f"[setup] ✅ {character_id} 配置完成！", flush=True)
+        return True
+
+    except Exception as e:
+        print(f"[setup] ❌ 配置 {character_id} 失败: {e}", flush=True)
+        import traceback
+        traceback.print_exc()
+        return False
+
+
+def _handle_character_create(handler, body):
+    """POST /api/characters/create - Create a new character."""
+    # Validate required fields
+    try:
+        require(body, 'id', 'name')
+    except ValueError as e:
+        return bad(handler, str(e))
+
+    character_id = str(body.get('id', '')).strip().lower()
+
+    # Validate character_id format (alphanumeric, dash, underscore only)
+    if not character_id or not _re.match(r'^[a-z0-9_-]+$', character_id):
+        return bad(handler, 'Invalid character_id: use lowercase letters, numbers, hyphens, underscores only')
+
+    # Check if character already exists
+    chars_dir = _get_characters_dir()
+    char_dir = chars_dir / character_id
+    if char_dir.exists():
+        return bad(handler, f'Character "{character_id}" already exists', 409)
+
+    # Create new character config
+    config = {
+        'id': character_id,
+        'name': str(body.get('name', '')).strip(),
+        'description': str(body.get('description', '')).strip(),
+        'system_prompt': str(body.get('system_prompt', '')).strip(),
+        'session_id': '',
+        'frames_count': 1,  # Default to 1 static frame
+    }
+
+    # Validate name is not empty
+    if not config['name']:
+        return bad(handler, 'name is required and cannot be empty')
+
+    # Create character directory and save config
+    try:
+        char_dir.mkdir(parents=True, exist_ok=True)
+        _save_character_config(character_id, config)
+
+        # 🆕 自动配置 Hermes 相关文件 (config.yaml, auth.json, skills, SOUL.md 等)
+        setup_success = _setup_character_configs(
+            character_id,
+            char_dir,
+            config.get('system_prompt', '')
+        )
+
+        if not setup_success:
+            print(f"[warn] 人物 {character_id} 创建了，但自动配置过程中出现警告", flush=True)
+            # 继续返回成功，因为基本配置已完成
+
+        return j(handler, {
+            'ok': True,
+            'character': {
+                'id': config.get('id', character_id),
+                'name': config.get('name', 'Unknown'),
+                'description': config.get('description', ''),
+                'system_prompt': config.get('system_prompt', ''),
+                'session_id': config.get('session_id', ''),
+                'frames_count': config.get('frames_count', 1),
+            }
+        })
+    except Exception as e:
+        return bad(handler, f'Failed to create character: {_sanitize_error(e)}', 500)
+
+
+def _handle_character_delete(handler, body, parsed):
+    """POST /api/characters/{character_id}/delete - Delete a character."""
+    # Extract character_id from path or body
+    character_id = body.get('character_id', '').strip()
+
+    # Try to extract from path (e.g., /api/characters/newchar/delete)
+    if not character_id:
+        parts = parsed.path.strip('/').split('/')
+        if len(parts) >= 3 and parts[0] == 'api' and parts[1] == 'characters':
+            character_id = parts[2]
+
+    if not character_id:
+        return bad(handler, 'character_id is required')
+
+    # Verify the character exists
+    chars_dir = _get_characters_dir()
+    char_dir = chars_dir / character_id
+    if not char_dir.exists():
+        return bad(handler, f'Character "{character_id}" not found', 404)
+
+    # Prevent deleting active character
+    active_char = _load_active_character()
+    if active_char == character_id:
+        return bad(handler, f'Cannot delete the active character. Switch to another character first.', 409)
+
+    # Delete the character directory and all its contents
+    try:
+        import shutil
+        shutil.rmtree(str(char_dir))
+        return j(handler, {
+            'ok': True,
+            'deleted': character_id,
+        })
+    except Exception as e:
+        return bad(handler, f'Failed to delete character: {_sanitize_error(e)}', 500)
+
+
+def _handle_character_open_folder(handler, body, parsed):
+    """POST /api/characters/{character_id}/open-folder - Open character folder in file manager."""
+    # Extract character_id from path or body
+    character_id = body.get('character_id', '').strip()
+
+    # Try to extract from path (e.g., /api/characters/huanhuan/open-folder)
+    if not character_id:
+        parts = parsed.path.strip('/').split('/')
+        if len(parts) >= 3 and parts[0] == 'api' and parts[1] == 'characters':
+            character_id = parts[2]
+
+    if not character_id:
+        return bad(handler, 'character_id is required')
+
+    # Verify the character exists
+    chars_dir = _get_characters_dir()
+    char_dir = chars_dir / character_id
+    if not char_dir.exists():
+        return bad(handler, f'Character "{character_id}" not found', 404)
+
+    # Open the character directory using the system file manager
+    try:
+        system = platform.system()
+        if system == 'Darwin':  # macOS
+            subprocess.Popen(['open', str(char_dir)])
+        elif system == 'Windows':
+            subprocess.Popen(['explorer', str(char_dir)])
+        elif system == 'Linux':
+            subprocess.Popen(['xdg-open', str(char_dir)])
+        else:
+            return bad(handler, f'Unsupported platform: {system}', 500)
+
+        return j(handler, {
+            'ok': True,
+            'character_id': character_id,
+            'path': str(char_dir),
+        })
+    except Exception as e:
+        return bad(handler, f'Failed to open folder: {_sanitize_error(e)}', 500)
 
 
 def _handle_frames(handler, parsed):

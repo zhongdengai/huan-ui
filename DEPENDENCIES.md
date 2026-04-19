@@ -26,11 +26,11 @@ huanhuan (Tauri桌面应用 - 本项目)
 - 作用: Web UI前端 + 会话管理 + API路由
 - 自动启动: huanhuan启动时自动启动 `huan-ui/start-huan-ui.sh`
 - 端口: 8868 (硬编码)
-- 数据存储:
-  - 聊天记录: `~/.hermes/webui/sessions/*.json`
-  - 用户设置: `~/.hermes/webui/settings.json`
-  - 工作区: `~/.hermes/webui/workspaces.json`
-  - 索引: `~/.hermes/webui/sessions/_index.json`
+- 数据存储: (已转移到项目内)
+  - 聊天记录: `./huan-ui/webui/sessions/*.json`
+  - 用户设置: `./huan-ui/webui/settings.json`
+  - 工作区: `./huan-ui/webui/workspaces.json`
+  - 索引: `./huan-ui/webui/sessions/_index.json`
 
 ### 3. **hermes命令行工具** (可选但推荐)
 ```bash

@@ -8,7 +8,7 @@
   "check_for_updates": false,
   "theme": "slate",
   "language": "zh",
-  "bot_name": "欢欢",
+  "bot_name": "Test Bot",
   "sound_enabled": false,
   "notifications_enabled": false,
   "password_hash": null

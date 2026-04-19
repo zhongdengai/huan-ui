@@ -53,11 +53,18 @@ const BACKEND_URL = typeof window.__TAURI__ !== 'undefined'
 
 // 动态变量
 let currentCharacter = null;
+let currentCharacterName = '欢欢'; // 当前角色名称
 let totalFrames = 0;
 let frames = [];
 let currentFrame = 0;
 let isPlaying = false;
 let animationFrameId = null;
+
+// 更新输入框 placeholder
+function updateInputPlaceholder(characterName) {
+  currentCharacterName = characterName;
+  msgInput.placeholder = `和${characterName}说...`;
+}
 
 // ── 粒子效果系统 ──
 class Particle {
@@ -160,6 +167,9 @@ async function initCharacter() {
     console.log(`[character] ✓ 已加载人物: ${characterConfig.name} (${currentCharacter})`);
     console.log(`[character] ✓ 帧数: ${totalFrames}`);
 
+    // 更新输入框 placeholder
+    updateInputPlaceholder(characterConfig.name);
+
     return true;
   } catch (err) {
     console.error('[character] 加载配置失败:', err);
@@ -168,6 +178,48 @@ async function initCharacter() {
     totalFrames = 121;
     console.warn('[character] ⚠️  使用默认配置: huanhuan (121帧)');
     return false;
+  }
+}
+
+// 更新角色皮肤（由网页端通过指令调用）
+async function updateCharacterSkin(newCharacterId) {
+  if (newCharacterId === currentCharacter) {
+    console.log(`[character] ℹ️  已经是人物 ${currentCharacter}，无需切换`);
+    return;
+  }
+
+  console.log(`[character] 🔄 收到角色切换指令: ${currentCharacter} → ${newCharacterId}`);
+
+  try {
+    // 停止当前动画
+    if (animationFrameId) {
+      cancelAnimationFrame(animationFrameId);
+      animationFrameId = null;
+      isPlaying = false;
+    }
+
+    // 清空旧帧数据
+    frames = [];
+    currentFrame = 0;
+
+    // 临时设置新角色ID（用于加载新的帧）
+    currentCharacter = newCharacterId;
+
+    // 重新加载新角色的配置和帧
+    const configLoaded = await initCharacter();
+
+    if (configLoaded) {
+      const framesLoaded = await loadFrames();
+
+      if (framesLoaded && frames.length > 0) {
+        console.log(`[character] ✓ 已切换到人物: ${currentCharacter}，开始播放动画`);
+        startAnimation();
+      } else {
+        console.warn(`[character] ⚠️  无法加载新人物的动画帧`);
+      }
+    }
+  } catch (err) {
+    console.error('[character] 角色切换失败:', err);
   }
 }
 
@@ -347,6 +399,9 @@ async function switchCharacter(characterId) {
     currentFrame = 0;
 
     console.log(`[character] ✓ 已切换到: ${data.character.name} (${totalFrames} 帧)`);
+
+    // 更新输入框 placeholder
+    updateInputPlaceholder(data.character.name);
 
     // 重新加载新人物的帧
     const success = await loadFrames(currentCharacter);
@@ -570,11 +625,11 @@ function showBubble(text, persist = false, showCopyBtn = false) {
   copyBtn.style.display = showCopyBtn ? 'block' : 'none';
 
   if (persist) {
-    // 回复信息保留 30 秒，鼠标进入则保持
+    // 回复信息保留 40 秒，鼠标进入则保持
     const startHideTimer = () => {
       bubbleHideTimer = setTimeout(() => {
         bubble.classList.remove('showing');
-      }, 30000);
+      }, 40000);
     };
 
     startHideTimer();

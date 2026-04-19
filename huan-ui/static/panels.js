@@ -1246,16 +1246,168 @@ async function loadCharacters() {
   const box = $('charactersPanel');
   try {
     const data = await api('/api/characters/list');
-    if (!data.characters || !data.characters.length) {
-      box.innerHTML = '<div style="padding:16px;color:var(--muted);font-size:12px">No characters found.</div>';
-      return;
-    }
     _charactersCache = data;
     box.innerHTML = '';
 
+    // Create a container for the entire panel
+    const container = document.createElement('div');
+
+    // Add Character button header
+    const headerBox = document.createElement('div');
+    headerBox.style.cssText = 'display:flex;justify-content:space-between;align-items:center;padding:12px 0;border-bottom:1px solid rgba(255,255,255,.08);margin-bottom:12px';
+
+    const headerTitle = document.createElement('div');
+    headerTitle.style.cssText = 'font-weight:600;color:var(--text);font-size:13px';
+    headerTitle.textContent = 'Characters';
+    headerBox.appendChild(headerTitle);
+
+    const addBtn = document.createElement('button');
+    addBtn.className = 'cron-btn run';
+    addBtn.style.cssText = 'padding:6px 12px;font-size:11px';
+    addBtn.textContent = '+ Add Character';
+    addBtn.onclick = () => toggleAddCharacterForm();
+    headerBox.appendChild(addBtn);
+
+    container.appendChild(headerBox);
+
+    // Create add character form (initially hidden)
+    const addForm = document.createElement('div');
+    addForm.id = 'add-character-form';
+    addForm.style.cssText = 'display:none;background:rgba(255,255,255,.04);border:1px solid rgba(255,255,255,.08);border-radius:8px;padding:12px;margin-bottom:12px';
+
+    const formTitle = document.createElement('div');
+    formTitle.style.cssText = 'font-weight:600;color:var(--text);font-size:13px;margin-bottom:12px';
+    formTitle.textContent = 'Create New Character';
+    addForm.appendChild(formTitle);
+
+    // Folder Name field
+    const idLabel = document.createElement('div');
+    idLabel.style.cssText = 'font-size:11px;color:var(--muted);margin-bottom:3px;font-weight:500';
+    idLabel.textContent = 'Folder Name';
+    addForm.appendChild(idLabel);
+
+    const idInput = document.createElement('input');
+    idInput.id = 'new-char-id';
+    idInput.type = 'text';
+    idInput.placeholder = 'e.g., mychar (lowercase, numbers, hyphens, underscores only)';
+    idInput.style.cssText = 'width:100%;background:rgba(255,255,255,.08);border:1px solid rgba(255,255,255,.15);border-radius:4px;color:rgba(255,255,255,.95);padding:6px 8px;font-size:12px;outline:none;margin-bottom:3px;box-sizing:border-box;transition:all .2s';
+    idInput.addEventListener('focus', () => {
+      idInput.style.background = 'rgba(255,255,255,.12)';
+      idInput.style.borderColor = 'rgba(255,255,255,.25)';
+    });
+    idInput.addEventListener('blur', () => {
+      idInput.style.background = 'rgba(255,255,255,.08)';
+      idInput.style.borderColor = 'rgba(255,255,255,.15)';
+    });
+    addForm.appendChild(idInput);
+
+    const idHint = document.createElement('div');
+    idHint.style.cssText = 'font-size:10px;color:rgba(255,255,255,.4);margin-bottom:8px;line-height:1.3';
+    idHint.textContent = '💡 文件夹名称 = 人物在系统中的唯一标识，创建后无法修改。用于存储人物的配置和动画文件。';
+    addForm.appendChild(idHint);
+
+    // Name field
+    const nameLabel = document.createElement('div');
+    nameLabel.style.cssText = 'font-size:11px;color:var(--muted);margin-bottom:3px;font-weight:500';
+    nameLabel.textContent = 'Name';
+    addForm.appendChild(nameLabel);
+
+    const nameInput = document.createElement('input');
+    nameInput.id = 'new-char-name';
+    nameInput.type = 'text';
+    nameInput.placeholder = 'Character display name';
+    nameInput.style.cssText = 'width:100%;background:rgba(255,255,255,.08);border:1px solid rgba(255,255,255,.15);border-radius:4px;color:rgba(255,255,255,.95);padding:6px 8px;font-size:12px;outline:none;margin-bottom:8px;box-sizing:border-box;transition:all .2s';
+    nameInput.addEventListener('focus', () => {
+      nameInput.style.background = 'rgba(255,255,255,.12)';
+      nameInput.style.borderColor = 'rgba(255,255,255,.25)';
+    });
+    nameInput.addEventListener('blur', () => {
+      nameInput.style.background = 'rgba(255,255,255,.08)';
+      nameInput.style.borderColor = 'rgba(255,255,255,.15)';
+    });
+    addForm.appendChild(nameInput);
+
+    // Description field
+    const descLabel = document.createElement('div');
+    descLabel.style.cssText = 'font-size:11px;color:var(--muted);margin-bottom:3px;font-weight:500';
+    descLabel.textContent = 'Description';
+    addForm.appendChild(descLabel);
+
+    const descInput = document.createElement('textarea');
+    descInput.id = 'new-char-desc';
+    descInput.placeholder = 'Character description (optional)';
+    descInput.rows = 2;
+    descInput.style.cssText = 'width:100%;background:rgba(255,255,255,.08);border:1px solid rgba(255,255,255,.15);border-radius:4px;color:rgba(255,255,255,.95);padding:6px 8px;font-size:12px;outline:none;resize:vertical;margin-bottom:3px;box-sizing:border-box;font-family:inherit;transition:all .2s';
+    descInput.addEventListener('focus', () => {
+      descInput.style.background = 'rgba(255,255,255,.12)';
+      descInput.style.borderColor = 'rgba(255,255,255,.25)';
+    });
+    descInput.addEventListener('blur', () => {
+      descInput.style.background = 'rgba(255,255,255,.08)';
+      descInput.style.borderColor = 'rgba(255,255,255,.15)';
+    });
+    addForm.appendChild(descInput);
+
+    const descHint = document.createElement('div');
+    descHint.style.cssText = 'font-size:10px;color:rgba(255,255,255,.4);margin-bottom:8px;line-height:1.3';
+    descHint.textContent = '💡 仅用于UI显示，不作为AI指令';
+    addForm.appendChild(descHint);
+
+    // System prompt field
+    const promptLabel = document.createElement('div');
+    promptLabel.style.cssText = 'font-size:11px;color:var(--muted);margin-bottom:3px;font-weight:500';
+    promptLabel.textContent = 'System Prompt';
+    addForm.appendChild(promptLabel);
+
+    const promptInput = document.createElement('textarea');
+    promptInput.id = 'new-char-prompt';
+    promptInput.placeholder = 'System prompt for AI behavior and personality (optional)';
+    promptInput.rows = 4;
+    promptInput.style.cssText = 'width:100%;background:rgba(255,255,255,.08);border:1px solid rgba(255,255,255,.15);border-radius:4px;color:rgba(255,255,255,.95);padding:6px 8px;font-size:12px;outline:none;resize:vertical;margin-bottom:8px;box-sizing:border-box;font-family:inherit;transition:all .2s';
+    promptInput.addEventListener('focus', () => {
+      promptInput.style.background = 'rgba(255,255,255,.12)';
+      promptInput.style.borderColor = 'rgba(255,255,255,.25)';
+    });
+    promptInput.addEventListener('blur', () => {
+      promptInput.style.background = 'rgba(255,255,255,.08)';
+      promptInput.style.borderColor = 'rgba(255,255,255,.15)';
+    });
+    addForm.appendChild(promptInput);
+
+    // Form buttons
+    const formBtnBox = document.createElement('div');
+    formBtnBox.style.cssText = 'display:flex;gap:6px';
+
+    const createBtn = document.createElement('button');
+    createBtn.className = 'cron-btn run';
+    createBtn.style.cssText = 'flex:1;padding:6px 8px;font-size:12px';
+    createBtn.textContent = 'Create';
+    createBtn.onclick = () => createNewCharacter(idInput, nameInput, descInput, promptInput);
+    formBtnBox.appendChild(createBtn);
+
+    const cancelFormBtn = document.createElement('button');
+    cancelFormBtn.className = 'cron-btn';
+    cancelFormBtn.style.cssText = 'flex:1;padding:6px 8px;font-size:12px';
+    cancelFormBtn.textContent = 'Cancel';
+    cancelFormBtn.onclick = () => toggleAddCharacterForm();
+    formBtnBox.appendChild(cancelFormBtn);
+
+    addForm.appendChild(formBtnBox);
+    container.appendChild(addForm);
+
+    // Show empty state if no characters
+    if (!data.characters || !data.characters.length) {
+      const emptyMsg = document.createElement('div');
+      emptyMsg.style.cssText = 'padding:16px;color:var(--muted);font-size:12px;text-align:center';
+      emptyMsg.textContent = 'No characters yet. Create your first character above!';
+      container.appendChild(emptyMsg);
+      box.appendChild(container);
+      return;
+    }
+
     // Create character cards grid
     const grid = document.createElement('div');
-    grid.style.cssText = 'display:grid;grid-template-columns:1fr;gap:12px;padding:12px 0';
+    grid.style.cssText = 'display:grid;grid-template-columns:1fr;gap:12px;padding:0';
 
     for (const char of data.characters) {
       const card = document.createElement('div');
@@ -1375,13 +1527,6 @@ async function loadCharacters() {
       applyBtn.onclick = () => applyCharacter(char.id, nameInput, descInput, promptInput);
       buttonBox.appendChild(applyBtn);
 
-      const saveBtn = document.createElement('button');
-      saveBtn.className = 'cron-btn run';
-      saveBtn.style.cssText = 'flex:1;padding:6px 8px;font-size:12px';
-      saveBtn.textContent = 'Save';
-      saveBtn.onclick = () => saveCharacter(char.id, nameInput, descInput, promptInput);
-      buttonBox.appendChild(saveBtn);
-
       const cancelBtn = document.createElement('button');
       cancelBtn.className = 'cron-btn';
       cancelBtn.style.cssText = 'flex:1;padding:6px 8px;font-size:12px';
@@ -1390,14 +1535,166 @@ async function loadCharacters() {
       buttonBox.appendChild(cancelBtn);
 
       editForm.appendChild(buttonBox);
+
+      // Additional buttons box (Open Folder and Delete)
+      const extraButtonsBox = document.createElement('div');
+      extraButtonsBox.style.cssText = 'display:flex;gap:6px;margin-top:8px';
+
+      // Open Folder button
+      const openFolderBtn = document.createElement('button');
+      openFolderBtn.className = 'cron-btn';
+      openFolderBtn.style.cssText = 'flex:1;padding:6px 8px;font-size:11px;color:#4a9eff;border-color:rgba(74,158,255,.3);background:rgba(74,158,255,.05);transition:all .2s';
+      openFolderBtn.textContent = '📁 Open Folder';
+      openFolderBtn.onmouseover = () => {
+        openFolderBtn.style.background = 'rgba(74,158,255,.15)';
+        openFolderBtn.style.borderColor = 'rgba(74,158,255,.5)';
+      };
+      openFolderBtn.onmouseout = () => {
+        openFolderBtn.style.background = 'rgba(74,158,255,.05)';
+        openFolderBtn.style.borderColor = 'rgba(74,158,255,.3)';
+      };
+      openFolderBtn.onclick = () => openCharacterFolder(char.id, char.name);
+      extraButtonsBox.appendChild(openFolderBtn);
+
+      // Delete button
+      const deleteBtn = document.createElement('button');
+      deleteBtn.className = 'cron-btn';
+      deleteBtn.style.cssText = 'flex:1;padding:6px 8px;font-size:11px;color:#ff6b6b;border-color:rgba(255,107,107,.3);background:rgba(255,107,107,.05);transition:all .2s';
+      deleteBtn.textContent = '🗑️ Delete';
+      deleteBtn.onmouseover = () => {
+        deleteBtn.style.background = 'rgba(255,107,107,.15)';
+        deleteBtn.style.borderColor = 'rgba(255,107,107,.5)';
+      };
+      deleteBtn.onmouseout = () => {
+        deleteBtn.style.background = 'rgba(255,107,107,.05)';
+        deleteBtn.style.borderColor = 'rgba(255,107,107,.3)';
+      };
+      deleteBtn.onclick = () => deleteCharacter(char.id, char.name);
+      extraButtonsBox.appendChild(deleteBtn);
+
+      editForm.appendChild(extraButtonsBox);
       card.appendChild(editForm);
 
       grid.appendChild(card);
     }
 
-    box.appendChild(grid);
+    container.appendChild(grid);
+    box.appendChild(container);
   } catch(e) {
     box.innerHTML = `<div style="padding:12px;color:var(--accent);font-size:12px">Error: ${esc(e.message)}</div>`;
+  }
+}
+
+function toggleAddCharacterForm() {
+  const form = $('add-character-form');
+  if (form) {
+    const isHidden = form.style.display === 'none';
+    form.style.display = isHidden ? '' : 'none';
+    if (isHidden) {
+      // Focus first input
+      const idInput = $('new-char-id');
+      if (idInput) idInput.focus();
+      // Clear form
+      $('new-char-id').value = '';
+      $('new-char-name').value = '';
+      $('new-char-desc').value = '';
+      $('new-char-prompt').value = '';
+    }
+  }
+}
+
+async function createNewCharacter(idInput, nameInput, descInput, promptInput) {
+  try {
+    const charId = idInput.value.trim().toLowerCase();
+    const charName = nameInput.value.trim();
+    const charDesc = descInput.value.trim();
+    const charPrompt = promptInput.value.trim();
+
+    if (!charId) {
+      showToast('Character ID is required');
+      return;
+    }
+    if (!charName) {
+      showToast('Character name is required');
+      return;
+    }
+
+    // Validate character ID format
+    if (!/^[a-z0-9_-]+$/.test(charId)) {
+      showToast('Character ID must be lowercase letters, numbers, hyphens, or underscores');
+      return;
+    }
+
+    const response = await api('/api/characters/create', {
+      method: 'POST',
+      body: JSON.stringify({
+        id: charId,
+        name: charName,
+        description: charDesc,
+        system_prompt: charPrompt
+      })
+    });
+
+    if (!response.ok) {
+      showToast('Error creating character: ' + (response.error || 'Unknown error'));
+      return;
+    }
+
+    showToast('Character created: ' + charName);
+    toggleAddCharacterForm();
+
+    // Reload character list
+    setTimeout(() => {
+      loadCharacters();
+    }, 300);
+  } catch (e) {
+    showToast('Error creating character: ' + e.message);
+  }
+}
+
+async function deleteCharacter(charId, charName) {
+  // Confirm deletion
+  if (!confirm(`Are you sure you want to delete "${charName}"? This cannot be undone.`)) {
+    return;
+  }
+
+  try {
+    const response = await api(`/api/characters/${charId}/delete`, {
+      method: 'POST',
+      body: JSON.stringify({ character_id: charId })
+    });
+
+    if (!response.ok) {
+      showToast('Error deleting character: ' + (response.error || 'Unknown error'));
+      return;
+    }
+
+    showToast('Character deleted: ' + charName);
+
+    // Reload character list
+    setTimeout(() => {
+      loadCharacters();
+    }, 300);
+  } catch (e) {
+    showToast('Error deleting character: ' + e.message);
+  }
+}
+
+async function openCharacterFolder(charId, charName) {
+  try {
+    const response = await api(`/api/characters/${charId}/open-folder`, {
+      method: 'POST',
+      body: JSON.stringify({ character_id: charId })
+    });
+
+    if (!response.ok) {
+      showToast('Error opening folder: ' + (response.error || 'Unknown error'));
+      return;
+    }
+
+    showToast('Opening folder for ' + charName);
+  } catch (e) {
+    showToast('Error opening folder: ' + e.message);
   }
 }
 
@@ -1422,47 +1719,10 @@ function toggleCharacterEdit(charId) {
 
 async function applyCharacter(charId, nameInput, descInput, promptInput) {
   try {
-    // Switch to this character
-    const response = await api(`/api/characters/${charId}/switch`, {
-      method: 'POST',
-      body: JSON.stringify({ character_id: charId })
-    });
-
-    if (response.ok) {
-      const characterName = response.character.name;
-      showToast('Character switched to ' + characterName);
-
-      // Update assistant name in settings to match character name
-      try {
-        await api('/api/settings', {
-          method: 'POST',
-          body: JSON.stringify({ bot_name: characterName })
-        });
-
-        // Update global variable and refresh UI
-        window._botName = characterName;
-        if (typeof applyBotName === 'function') {
-          applyBotName();
-        }
-      } catch (e) {
-        console.warn('Could not update bot name:', e.message);
-      }
-
-      // Reload page after a short delay to sync all UI
-      setTimeout(() => {
-        location.reload();
-      }, 500);
-    }
-  } catch (e) {
-    showToast('Error switching character: ' + e.message);
-  }
-}
-
-async function saveCharacter(charId, nameInput, descInput, promptInput) {
-  try {
     const newName = nameInput.value.trim() || 'Unnamed';
-    console.log('[saveCharacter] 开始保存人物', charId, '新名字:', newName);
-    const response = await api(`/api/characters/${charId}/update`, {
+
+    // Step 1: Save character configuration
+    const saveResponse = await api(`/api/characters/${charId}/update`, {
       method: 'POST',
       body: JSON.stringify({
         character_id: charId,
@@ -1472,40 +1732,46 @@ async function saveCharacter(charId, nameInput, descInput, promptInput) {
       })
     });
 
-    console.log('[saveCharacter] API响应:', response);
-    if (response.ok) {
-      console.log('[saveCharacter] 保存成功，人物已更新');
-      showToast('Character saved');
+    if (!saveResponse.ok) {
+      showToast('Error saving character: ' + (saveResponse.message || 'Unknown error'));
+      return;
+    }
 
-      // If this is the active character, update bot name too
-      if (_charactersCache && _charactersCache.active === charId) {
-        console.log('[saveCharacter] 这是活跃人物，更新助手名称');
-        try {
-          await api('/api/settings', {
-            method: 'POST',
-            body: JSON.stringify({ bot_name: newName })
-          });
+    // Step 2: Switch to this character
+    const switchResponse = await api(`/api/characters/${charId}/switch`, {
+      method: 'POST',
+      body: JSON.stringify({ character_id: charId })
+    });
 
-          // Update global variable and refresh UI
-          window._botName = newName;
-          if (typeof applyBotName === 'function') {
-            applyBotName();
-          }
-        } catch (e) {
-          console.warn('Could not update bot name:', e.message);
+    if (switchResponse.ok) {
+      showToast('Character applied: ' + newName);
+
+      // Show reminder to switch character on desktop
+      alert(`✨ 已在网页端切换到 "${newName}"\n\n📱 请在桌面应用中右键点击小宠物，选择"切换人物"，也切换到"${newName}"，这样桌面皮肤才会更新！`);
+
+      // Step 3: Update assistant name in settings to match character name
+      try {
+        await api('/api/settings', {
+          method: 'POST',
+          body: JSON.stringify({ bot_name: newName })
+        });
+
+        // Update global variable and refresh UI
+        window._botName = newName;
+        if (typeof applyBotName === 'function') {
+          applyBotName();
         }
-
-        // Reload page to sync all UI including desktop app menu
-        setTimeout(() => {
-          location.reload();
-        }, 500);
-      } else {
-        // Refresh the character list without full page reload
-        await loadCharacters();
+      } catch (e) {
+        console.warn('Could not update bot name:', e.message);
       }
+
+      // Step 4: Reload page after a short delay to sync all UI
+      setTimeout(() => {
+        location.reload();
+      }, 500);
     }
   } catch (e) {
-    showToast('Error saving character: ' + e.message);
+    showToast('Error applying character: ' + e.message);
   }
 }
 
