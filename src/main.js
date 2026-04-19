@@ -34,6 +34,8 @@ const msgInput = document.getElementById('msg-input');
 const inputWrap = document.getElementById('input-wrap');
 const contextMenu = document.getElementById('context-menu');
 const quitBtn = document.getElementById('quit-btn');
+const switchCharacterBtn = document.getElementById('switch-character-btn');
+const characterSubmenu = document.getElementById('character-submenu');
 const avatar = document.getElementById('avatar');
 const copyBtn = document.getElementById('copy-btn');
 const voiceBtn = document.getElementById('voice-btn');
@@ -43,9 +45,15 @@ const fileBtn = document.getElementById('file-btn');
 // ── Canvas 动画播放 ────────────────────────────────────────────
 const canvas = avatar;
 const ctx = canvas.getContext('2d', { alpha: true });
-const TOTAL_FRAMES = 121;
 const FRAME_RATE = 24; // fps
+// 注意：在Tauri中使用127.0.0.1而不是localhost，因为localhost解析可能不同
+const BACKEND_URL = typeof window.__TAURI__ !== 'undefined'
+  ? 'http://127.0.0.1:8868'  // Tauri环境
+  : 'http://localhost:8868';  // 浏览器环境
 
+// 动态变量
+let currentCharacter = null;
+let totalFrames = 0;
 let frames = [];
 let currentFrame = 0;
 let isPlaying = false;
@@ -103,11 +111,17 @@ function updateAndDrawParticles() {
   }
 }
 
-// 初始化 Canvas 尺寸
-function initCanvas() {
+// 初始化 Canvas 尺寸（动态，基于加载的帧）
+function initCanvas(frameWidth = null, frameHeight = null) {
   const wrap = document.getElementById('avatar-wrap');
-  const width = 400;  // 固定尺寸（PNG 的宽度）
-  const height = 400; // 容器高度
+
+  // 如果提供了帧尺寸，使用帧尺寸；否则使用默认值
+  let width = frameWidth || 400;
+  let height = frameHeight || 400;
+
+  // 确保最小尺寸
+  width = Math.max(width, 200);
+  height = Math.max(height, 200);
 
   canvas.width = width;
   canvas.height = height;
@@ -119,34 +133,80 @@ function initCanvas() {
   // 清除背景
   ctx.clearRect(0, 0, width, height);
 
-  // 测试绘制（画个红色矩形看看 Canvas 能否显示）
-  ctx.fillStyle = 'rgba(255,0,0,0.3)';
-  ctx.fillRect(10, 10, 50, 50);
-  ctx.clearRect(0, 0, width, height);
-
   console.log('[canvas] 初始化完成：', width, 'x', height);
 }
 
-// 预加载所有 PNG 帧
-async function loadFrames() {
-  console.log('[frames] 开始加载 121 个 PNG 帧...');
+// 从服务器加载当前人物的配置
+async function initCharacter() {
+  try {
+    console.log('[character] 正在从服务器加载人物配置...');
+    const response = await fetch(`${BACKEND_URL}/api/characters/list`);
+
+    if (!response.ok) {
+      throw new Error(`HTTP ${response.status}`);
+    }
+
+    const data = await response.json();
+    const activeCharacterId = data.active;
+    const characterConfig = data.characters.find(c => c.id === activeCharacterId);
+
+    if (!characterConfig) {
+      throw new Error(`找不到人物配置: ${activeCharacterId}`);
+    }
+
+    currentCharacter = characterConfig.id;
+    totalFrames = characterConfig.frames_count || 0;
+
+    console.log(`[character] ✓ 已加载人物: ${characterConfig.name} (${currentCharacter})`);
+    console.log(`[character] ✓ 帧数: ${totalFrames}`);
+
+    return true;
+  } catch (err) {
+    console.error('[character] 加载配置失败:', err);
+    // 降级方案：使用默认配置
+    currentCharacter = 'huanhuan';
+    totalFrames = 121;
+    console.warn('[character] ⚠️  使用默认配置: huanhuan (121帧)');
+    return false;
+  }
+}
+
+// 预加载所有 PNG 帧（参数化版本）
+async function loadFrames(characterId = null) {
+  const charId = characterId || currentCharacter;
+
+  if (!charId) {
+    console.error('[frames] 错误: 没有指定人物ID');
+    return false;
+  }
+
+  if (totalFrames <= 0) {
+    console.warn(`[frames] ⚠️  人物 ${charId} 没有帧数据 (${totalFrames})`);
+    return false;
+  }
+
+  console.log(`[frames] 开始加载 ${totalFrames} 个 PNG 帧 (${charId})...`);
   frames = [];
 
-  for (let i = 1; i <= TOTAL_FRAMES; i++) {
+  const cachebust = Date.now();  // 缓存破坏者：使用当前时间戳
+  for (let i = 1; i <= totalFrames; i++) {
     const frameNum = String(i).padStart(4, '0');
     const img = new Image();
     img.crossOrigin = 'anonymous';
-    img.src = `frames/frame-${frameNum}.png`;
+    // 使用参数化的HTTP URL，加上缓存破坏参数
+    img.src = `${BACKEND_URL}/api/frames/${charId}/frame-${frameNum}.png?t=${cachebust}`;
 
     frames.push(
       new Promise((resolve, reject) => {
         img.onload = () => {
-          console.log(`[frames] 已加载: frame-${frameNum}.png`);
+          if (i % 20 === 0 || i === 1 || i === totalFrames) {
+            console.log(`[frames] 已加载: frame-${frameNum}.png (${i}/${totalFrames})`);
+          }
           resolve(img);
         };
         img.onerror = () => {
           console.error(`[frames] 加载失败: frame-${frameNum}.png`);
-          reject(new Error(`Failed to load frame-${frameNum}.png`));
+          reject(new Error(`Failed to load ${charId}/frame-${frameNum}.png`));
         };
       })
     );
@@ -157,12 +217,23 @@ async function loadFrames() {
     console.log(`[frames] ✅ 成功加载 ${loadedFrames.length} 个帧`);
     frames = loadedFrames;
 
-    // 加载完毕，绘制第一帧并启动动画
-    drawFrame(0);
-    console.log('[frames] 已绘制第一帧');
-    startAnimation();
+    // 加载完毕，重新初始化 Canvas 并绘制第一帧
+    if (frames.length > 0) {
+      const firstFrame = frames[0];
+      console.log(`[frames] 第一帧尺寸: ${firstFrame.naturalWidth}x${firstFrame.naturalHeight}`);
+      // 使用实际帧尺寸初始化 Canvas
+      initCanvas(firstFrame.naturalWidth, firstFrame.naturalHeight);
+
+      currentFrame = 0;
+      drawFrame(0);
+      console.log('[frames] 已绘制第一帧');
+    }
+
+    return true;
   } catch (err) {
     console.error('[frames] 加载失败:', err);
+    frames = [];
+    return false;
   }
 }
 
@@ -176,8 +247,8 @@ function drawFrame(frameIndex) {
   const img = frames[frameIndex];
   const canvasW = canvas.width;
   const canvasH = canvas.height;
-  const imgW = img.width;
-  const imgH = img.height;
+  const imgW = img.naturalWidth;
+  const imgH = img.naturalHeight;
 
   // 清除 Canvas
   ctx.clearRect(0, 0, canvasW, canvasH);
@@ -220,17 +291,19 @@ function drawFrame(frameIndex) {
 
 // 动画循环
 function animate() {
+  if (frames.length === 0) return;
+
   drawFrame(currentFrame);
-  currentFrame = (currentFrame + 1) % TOTAL_FRAMES;
+  currentFrame = (currentFrame + 1) % totalFrames;
 
   const frameDuration = 1000 / FRAME_RATE;
   animationFrameId = setTimeout(animate, frameDuration);
 }
 
 function startAnimation() {
-  if (isPlaying) return;
+  if (isPlaying || frames.length === 0) return;
   isPlaying = true;
-  console.log('[animation] ▶️ 开始播放');
+  console.log('[animation] ▶️ 开始播放 (24fps)');
   animate();
 }
 
@@ -239,6 +312,57 @@ function stopAnimation() {
   isPlaying = false;
   clearTimeout(animationFrameId);
   console.log('[animation] ⏹️ 停止播放');
+}
+
+// 动态切换人物
+async function switchCharacter(characterId) {
+  console.log(`[character] 正在切换到: ${characterId}...`);
+
+  // 停止当前动画
+  stopAnimation();
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+  try {
+    // 切换激活人物
+    const response = await fetch(`${BACKEND_URL}/api/characters/${characterId}/switch`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({})
+    });
+
+    if (!response.ok) {
+      throw new Error(`HTTP ${response.status}`);
+    }
+
+    const data = await response.json();
+
+    if (!data.ok) {
+      throw new Error(data.error || '切换失败');
+    }
+
+    // 更新本地配置
+    currentCharacter = data.active;
+    totalFrames = data.character?.frames_count || 0;
+    frames = [];
+    currentFrame = 0;
+
+    console.log(`[character] ✓ 已切换到: ${data.character.name} (${totalFrames} 帧)`);
+
+    // 重新加载新人物的帧
+    const success = await loadFrames(currentCharacter);
+
+    if (success) {
+      console.log('[character] 正在开始新人物的动画...');
+      startAnimation();
+    } else {
+      console.warn(`[character] ⚠️  ${data.character.name} 没有可用的动画帧`);
+    }
+  } catch (err) {
+    console.error('[character] 切换失败:', err);
+    // 尝试恢复到之前的人物
+    await loadFrames(currentCharacter);
+    startAnimation();
+  }
 }
 
 let currentSessionId = null;  // 保存当前会话 ID
@@ -607,7 +731,6 @@ document.addEventListener('mousedown', (e) => {
 
 // ── 右键菜单：设置 ────────────────────────────────────────────────
 const settingsBtn = document.getElementById('settings-btn');
-const debugBtn = document.getElementById('debug-btn');
 
 settingsBtn.addEventListener('click', async () => {
   contextMenu.classList.remove('visible');
@@ -619,13 +742,83 @@ settingsBtn.addEventListener('click', async () => {
   }
 });
 
-// ── 调试日志开关 ────────────────────────────────────────────────
+// ── 右键菜单：切换人物 ────────────────────────────────────────────────
+switchCharacterBtn.addEventListener('click', async () => {
+  try {
+    // 从后端获取人物列表
+    const url = `${BACKEND_URL}/api/characters/list`;
+    console.log(`[menu] 正在加载人物列表...`);
+    console.log(`[menu] 环境: ${typeof window.__TAURI__ !== 'undefined' ? 'Tauri桌面应用' : '网页浏览器'}`);
+    console.log(`[menu] BACKEND_URL: ${BACKEND_URL}`);
+    console.log(`[menu] 完整请求URL: ${url}`);
+    showBubble('加载人物列表中...', false, false);
+    // 3秒后自动隐藏加载提示
+    setTimeout(() => { if (bubble.classList.contains('showing')) bubble.classList.remove('showing'); }, 3000);
+
+    const response = await fetch(url);
+    console.log(`[menu] 收到响应: status=${response.status}, ok=${response.ok}`);
+
+    if (!response.ok) {
+      throw new Error(`HTTP ${response.status}: 无法加载人物列表`);
+    }
+    const data = await response.json();
+    console.log(`[menu] 加载成功，共 ${data.characters.length} 个人物`);
+
+    // 清空并生成子菜单项
+    characterSubmenu.innerHTML = '';
+    data.characters.forEach(character => {
+      const btn = document.createElement('button');
+      btn.textContent = character.name;
+      btn.addEventListener('click', async () => {
+        console.log(`[menu] 切换到人物: ${character.name} (${character.id})`);
+        // 切换人物
+        await switchCharacter(character.id);
+        // 隐藏菜单
+        contextMenu.classList.remove('visible');
+        characterSubmenu.classList.remove('visible');
+      });
+      characterSubmenu.appendChild(btn);
+    });
+
+    // 显示子菜单（定位在主菜单右侧）
+    const menuRect = contextMenu.getBoundingClientRect();
+    const btnRect = switchCharacterBtn.getBoundingClientRect();
+
+    // 子菜单显示在主菜单的右侧
+    characterSubmenu.style.position = 'fixed';
+    characterSubmenu.style.left = (menuRect.right + 5) + 'px';  // 主菜单右侧 +5px 间距
+    characterSubmenu.style.top = btnRect.top + 'px';  // 与按钮顶部对齐
+    characterSubmenu.classList.add('visible');
+
+    console.log('[menu] ✅ 人物列表已加载:', data.characters.map(c => c.name).join(', '));
+  } catch (err) {
+    console.error('[menu] ❌ 加载人物列表失败:');
+    console.error('  - 错误类型:', err.name);
+    console.error('  - 错误信息:', err.message);
+    console.error('  - 完整错误:', err);
+    showBubble(`加载失败: ${err.message}`, true, false);
+  }
+});
+
+// 点击其他地方时隐藏子菜单
+document.addEventListener('click', (e) => {
+  if (e.target !== switchCharacterBtn && !characterSubmenu.contains(e.target)) {
+    characterSubmenu.classList.remove('visible');
+  }
+});
+
+// ── 右键菜单：调试开关 ────────────────────────────────────────────────
+const debugBtn = document.getElementById('debug-btn');
+function updateDebugButtonText() {
+  debugBtn.textContent = `调试：${DEBUG_MODE ? 'on' : 'off'}`;
+}
 debugBtn.addEventListener('click', () => {
   DEBUG_MODE = !DEBUG_MODE;
-  debugBtn.textContent = DEBUG_MODE ? '🐛 调试日志 (ON)' : '🐛 调试日志 (OFF)';
+  updateDebugButtonText();
   contextMenu.classList.remove('visible');
-  console.log('[DEBUG] 调试模式已' + (DEBUG_MODE ? '启用' : '禁用'));
+  console.log(`[debug] 调试模式: ${DEBUG_MODE ? '开启' : '关闭'}`);
 });
+updateDebugButtonText();
 
 quitBtn.addEventListener('click', () => invoke('quit_app'));
 
@@ -633,7 +826,21 @@ quitBtn.addEventListener('click', () => invoke('quit_app'));
 // 由于脚本在页面最后，DOMContentLoaded可能已经触发，所以检查readyState
 async function initializeApp() {
   initCanvas();
-  await loadFrames();
+
+  // 从服务器加载人物配置
+  await initCharacter();
+
+  // 加载当前人物的动画帧
+  const framesLoaded = await loadFrames();
+
+  // 如果帧加载成功，启动动画
+  if (framesLoaded && frames.length > 0) {
+    startAnimation();
+  } else {
+    console.warn('[init] ⚠️  无法加载动画帧，跳过动画启动');
+  }
+
+  // 初始化会话
   await initializeSession();
 }
 

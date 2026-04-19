@@ -120,7 +120,7 @@
     #bubble {
       display: none;
       position: absolute;
-      top: 180px;
+      top: 175px;
       left: 5px;
       right: 35px;
       height: auto;
@@ -195,6 +195,38 @@
     }
 
     #context-menu button:hover { background: rgba(255, 255, 255, 0.12); }
+
+    /* ── 人物切换子菜单 ── */
+    #character-submenu {
+      position: fixed;
+      display: none;
+      background: rgba(30, 30, 30, 0.92);
+      border: 1px solid rgba(255, 255, 255, 0.15);
+      border-radius: 8px;
+      padding: 4px;
+      z-index: 10000;
+      backdrop-filter: blur(10px);
+      min-width: 100px;
+    }
+
+    #character-submenu.visible { display: block; }
+
+    #character-submenu button {
+      display: block;
+      width: 100%;
+      padding: 8px 16px;
+      background: transparent;
+      border: none;
+      color: #fff;
+      font-size: 13px;
+      text-align: left;
+      cursor: pointer;
+      border-radius: 5px;
+      font-family: inherit;
+      white-space: nowrap;
+    }
+
+    #character-submenu button:hover { background: rgba(255, 255, 255, 0.12); }
   </style>
 </head>
 <body>
@@ -229,9 +261,13 @@
   <!-- 右键菜单 -->
   <div id="context-menu">
     <button id="settings-btn">设置</button>
-    <button id="debug-btn">🐛 调试日志 (OFF)</button>
+    <button id="switch-character-btn">切换人物</button>
+    <button id="debug-btn">调试</button>
     <button id="quit-btn">退出</button>
   </div>
+
+  <!-- 人物切换子菜单 -->
+  <div id="character-submenu"></div>
 
   <script src="main.js"></script>
 </body>
