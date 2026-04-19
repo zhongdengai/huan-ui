@@ -47,6 +47,17 @@ def _check_csrf(handler) -> bool:
     ] if h.strip()}
     if origin_host in allowed_hosts:
         return True
+
+    # Allow localhost-to-localhost requests (different ports, same machine)
+    # This is safe for development as both are local
+    m_origin = _re.match(r'^([^:]+)', origin_host)
+    m_host = _re.match(r'^([^:]+)', host)
+    if m_origin and m_host:
+        origin_hostname = m_origin.group(1)
+        backend_hostname = m_host.group(1)
+        if origin_hostname == backend_hostname and origin_hostname in ('localhost', '127.0.0.1', '::1'):
+            return True
+
     return False
 from api.models import (
     Session, get_session, new_session, all_sessions, title_from,
@@ -299,6 +310,12 @@ def handle_get(handler, parsed) -> bool:
                 personalities.append({'name': name, 'description': desc})
         return j(handler, {'personalities': personalities})
 
+    if parsed.path == '/api/characters/list':
+        return _handle_characters_list(handler)
+
+    if parsed.path.startswith('/api/frames/'):
+        return _handle_frames(handler, parsed)
+
     if parsed.path == '/api/git-info':
         qs = parse_qs(parsed.query)
         sid = qs.get('session_id', [''])[0]
@@ -486,6 +503,15 @@ def handle_post(handler, parsed) -> bool:
         s.personality = name if name else None
         s.save()
         return j(handler, {'ok': True, 'personality': s.personality, 'prompt': prompt})
+
+    # ── Character management (POST) ──
+    if parsed.path.startswith('/api/characters/'):
+        if parsed.path == '/api/characters/switch' or parsed.path.endswith('/switch'):
+            # Match both /api/characters/switch and /api/characters/{id}/switch
+            return _handle_character_switch(handler, body, parsed)
+        elif parsed.path == '/api/characters/update' or parsed.path.endswith('/update'):
+            # Match both /api/characters/update and /api/characters/{id}/update
+            return _handle_character_update(handler, body, parsed)
 
     if parsed.path == '/api/session/update':
         try: require(body, 'session_id')
@@ -1529,3 +1555,212 @@ def _handle_session_import(handler, body):
             SESSIONS.popitem(last=False)
     s.save()
     return j(handler, {'ok': True, 'session': s.compact() | {'messages': s.messages}})
+
+
+# ── Character management helpers ──────────────────────────────────────────────
+
+def _get_characters_dir():
+    """Get the characters directory, resolving it relative to the webui root."""
+    try:
+        from api.config import REPO_ROOT
+        chars_dir = REPO_ROOT / 'user' / 'characters'
+    except ImportError:
+        chars_dir = Path(__file__).parent.parent / 'user' / 'characters'
+    return chars_dir.resolve()
+
+
+def _load_character_config(character_id):
+    """Load a single character config file. Returns dict or None if not found."""
+    config_file = _get_characters_dir() / character_id / 'config.json'
+    if config_file.exists():
+        try:
+            return json.loads(config_file.read_text(encoding='utf-8'))
+        except Exception:
+            return None
+    return None
+
+
+def _save_character_config(character_id, config):
+    """Save a character config file. Creates directory if needed."""
+    char_dir = _get_characters_dir() / character_id
+    char_dir.mkdir(parents=True, exist_ok=True)
+    config_file = char_dir / 'config.json'
+    config_file.write_text(
+        json.dumps(config, ensure_ascii=False, indent=2),
+        encoding='utf-8',
+    )
+    return True
+
+
+def _load_active_character():
+    """Load the currently active character ID from a state file. Returns character_id or None."""
+    state_file = _get_characters_dir().parent / '.active_character'
+    if state_file.exists():
+        try:
+            return state_file.read_text(encoding='utf-8').strip()
+        except Exception:
+            return None
+    return None
+
+
+def _save_active_character(character_id):
+    """Save the active character ID to a state file."""
+    state_file = _get_characters_dir().parent / '.active_character'
+    state_file.parent.mkdir(parents=True, exist_ok=True)
+    state_file.write_text(character_id, encoding='utf-8')
+    return True
+
+
+def _handle_characters_list(handler):
+    """GET /api/characters/list - List all available characters."""
+    chars_dir = _get_characters_dir()
+    characters = []
+    active_char = _load_active_character()
+
+    if chars_dir.exists() and chars_dir.is_dir():
+        for char_dir in chars_dir.iterdir():
+            if char_dir.is_dir():
+                config = _load_character_config(char_dir.name)
+                if config and isinstance(config, dict):
+                    char_entry = {
+                        'id': config.get('id', char_dir.name),
+                        'name': config.get('name', 'Unknown'),
+                        'description': config.get('description', ''),
+                        'system_prompt': config.get('system_prompt', ''),
+                        'frames_count': config.get('frames_count', 0),
+                        'is_active': char_dir.name == active_char,
+                    }
+                    characters.append(char_entry)
+
+    characters.sort(key=lambda c: c['name'])
+    return j(handler, {
+        'characters': characters,
+        'active': active_char,
+    })
+
+
+def _handle_character_switch(handler, body, parsed):
+    """POST /api/characters/{character_id}/switch - Switch to a different character."""
+    # Extract character_id from path or body
+    character_id = body.get('character_id', '').strip()
+
+    # Try to extract from path (e.g., /api/characters/xuebao/switch)
+    if not character_id:
+        parts = parsed.path.strip('/').split('/')
+        if len(parts) >= 3 and parts[0] == 'api' and parts[1] == 'characters':
+            character_id = parts[2]
+
+    if not character_id:
+        return bad(handler, 'character_id is required')
+
+    # Verify the character exists
+    config = _load_character_config(character_id)
+    if not config:
+        return bad(handler, f'Character "{character_id}" not found', 404)
+
+    # Save as active character
+    _save_active_character(character_id)
+
+    return j(handler, {
+        'ok': True,
+        'active': character_id,
+        'character': {
+            'id': config.get('id', character_id),
+            'name': config.get('name', 'Unknown'),
+            'description': config.get('description', ''),
+            'system_prompt': config.get('system_prompt', ''),
+            'frames_count': config.get('frames_count', 0),
+        }
+    })
+
+
+def _handle_character_update(handler, body, parsed):
+    """POST /api/characters/{character_id}/update - Update character configuration."""
+    # Extract character_id from path or body
+    character_id = body.get('character_id', '').strip()
+
+    # Try to extract from path (e.g., /api/characters/xuebao/update)
+    if not character_id:
+        parts = parsed.path.strip('/').split('/')
+        if len(parts) >= 3 and parts[0] == 'api' and parts[1] == 'characters':
+            character_id = parts[2]
+
+    if not character_id:
+        return bad(handler, 'character_id is required')
+
+    # Load existing config
+    config = _load_character_config(character_id)
+    if not config:
+        return bad(handler, f'Character "{character_id}" not found', 404)
+
+    # Update allowed fields
+    updatable_fields = ['name', 'description', 'system_prompt', 'session_id', 'frames_count']
+    for field in updatable_fields:
+        if field in body:
+            config[field] = body[field]
+
+    # Always preserve id
+    config['id'] = character_id
+
+    # Save updated config
+    _save_character_config(character_id, config)
+
+    return j(handler, {
+        'ok': True,
+        'character': {
+            'id': config.get('id', character_id),
+            'name': config.get('name', 'Unknown'),
+            'description': config.get('description', ''),
+            'system_prompt': config.get('system_prompt', ''),
+            'session_id': config.get('session_id', ''),
+            'frames_count': config.get('frames_count', 0),
+        }
+    })
+
+
+def _handle_frames(handler, parsed):
+    """GET /api/frames/{character_id}/frame-{frame_num}.png - Serve animation frame images."""
+    # Parse path: /api/frames/{character_id}/frame-{frame_num}.png
+    parts = parsed.path.strip('/').split('/')
+    if len(parts) < 4 or parts[0] != 'api' or parts[1] != 'frames':
+        return bad(handler, 'Invalid frame path', 400)
+
+    character_id = parts[2]
+    frame_file = '/'.join(parts[3:])  # Get the remaining parts as filename
+
+    # Validate character_id (alphanumeric, dash, underscore only)
+    if not character_id or not _re.match(r'^[a-zA-Z0-9_-]+$', character_id):
+        return bad(handler, 'Invalid character_id', 400)
+
+    # Validate frame filename (frame-XXXX.png format)
+    if not _re.match(r'^frame-\d{4}\.png$', frame_file):
+        return bad(handler, 'Invalid frame filename', 400)
+
+    # Resolve frame file path safely
+    chars_dir = _get_characters_dir()
+    frame_path = (chars_dir / character_id / 'frames' / frame_file).resolve()
+
+    # Security: ensure resolved path stays within character directory
+    try:
+        (chars_dir / character_id).resolve().relative_to(chars_dir)
+        frame_path.relative_to((chars_dir / character_id).resolve())
+    except ValueError:
+        return bad(handler, 'Invalid path traversal', 400)
+
+    # Check if file exists
+    if not frame_path.exists() or not frame_path.is_file():
+        return bad(handler, f'Frame not found: {frame_file}', 404)
+
+    # Serve the image file
+    try:
+        raw_bytes = frame_path.read_bytes()
+        handler.send_response(200)
+        handler.send_header('Content-Type', 'image/png')
+        handler.send_header('Content-Length', str(len(raw_bytes)))
+        handler.send_header('Cache-Control', 'public, max-age=31536000')  # Cache for 1 year
+        handler.send_header('Access-Control-Allow-Origin', '*')
+        handler.end_headers()
+        handler.wfile.write(raw_bytes)
+        return True
+    except Exception as e:
+        return bad(handler, _sanitize_error(e), 500)

@@ -15,6 +15,7 @@ async function switchPanel(name) {
   if (name === 'memory') await loadMemory();
   if (name === 'workspaces') await loadWorkspacesPanel();
   if (name === 'profiles') await loadProfilesPanel();
+  if (name === 'characters') await loadCharacters();
   if (name === 'todos') loadTodos();
 }
 
@@ -1235,6 +1236,184 @@ function dismissErrorBanner(){
   _backgroundErrors.length=0;
   const banner=$('bgErrorBanner');
   if(banner) banner.style.display='none';
+}
+
+// ── Characters panel ──
+let _charactersCache = null;
+let _editingCharacterId = null;
+
+async function loadCharacters() {
+  const box = $('charactersPanel');
+  try {
+    const data = await api('/api/characters/list');
+    if (!data.characters || !data.characters.length) {
+      box.innerHTML = '<div style="padding:16px;color:var(--muted);font-size:12px">No characters found.</div>';
+      return;
+    }
+    _charactersCache = data;
+    box.innerHTML = '';
+
+    // Create character cards grid
+    const grid = document.createElement('div');
+    grid.style.cssText = 'display:grid;grid-template-columns:1fr;gap:12px;padding:12px 0';
+
+    for (const char of data.characters) {
+      const card = document.createElement('div');
+      card.className = 'character-card';
+      card.id = 'char-card-' + char.id;
+      card.style.cssText = `
+        background:rgba(255,255,255,.04);
+        border:1px solid rgba(255,255,255,.08);
+        border-radius:8px;
+        padding:12px;
+        transition:background .15s
+      `;
+
+      const header = document.createElement('div');
+      header.style.cssText = 'display:flex;align-items:center;gap:8px;margin-bottom:8px;cursor:pointer';
+      header.onclick = () => toggleCharacterEdit(char.id);
+
+      const nameEl = document.createElement('div');
+      nameEl.style.cssText = 'flex:1;font-weight:600;color:var(--text);font-size:13px';
+      nameEl.textContent = char.name;
+      header.appendChild(nameEl);
+
+      const statusEl = document.createElement('span');
+      statusEl.style.cssText = 'font-size:11px;color:var(--muted);padding:2px 8px;background:rgba(255,255,255,.05);border-radius:4px';
+      statusEl.textContent = char.is_active ? '● Active' : '';
+      header.appendChild(statusEl);
+
+      card.appendChild(header);
+
+      const desc = document.createElement('div');
+      desc.style.cssText = 'font-size:11px;color:var(--muted);margin-bottom:8px;max-height:40px;overflow:hidden;text-overflow:ellipsis;white-space:normal;line-height:1.4';
+      desc.textContent = char.description || '(no description)';
+      card.appendChild(desc);
+
+      // Edit form (hidden by default)
+      const editForm = document.createElement('div');
+      editForm.id = 'char-edit-' + char.id;
+      editForm.style.cssText = 'display:none;border-top:1px solid rgba(255,255,255,.08);padding-top:8px;margin-top:8px';
+
+      // Name field
+      const nameInput = document.createElement('input');
+      nameInput.type = 'text';
+      nameInput.placeholder = 'Character name';
+      nameInput.value = char.name;
+      nameInput.style.cssText = 'width:100%;background:rgba(255,255,255,.05);border:1px solid rgba(255,255,255,.1);border-radius:4px;color:var(--text);padding:6px 8px;font-size:12px;outline:none;margin-bottom:6px;box-sizing:border-box';
+      editForm.appendChild(nameInput);
+
+      // Description field
+      const descInput = document.createElement('textarea');
+      descInput.placeholder = 'Character description';
+      descInput.value = char.description || '';
+      descInput.rows = 2;
+      descInput.style.cssText = 'width:100%;background:rgba(255,255,255,.05);border:1px solid rgba(255,255,255,.1);border-radius:4px;color:var(--text);padding:6px 8px;font-size:12px;outline:none;resize:vertical;margin-bottom:6px;box-sizing:border-box;font-family:inherit';
+      editForm.appendChild(descInput);
+
+      // System prompt field
+      const promptInput = document.createElement('textarea');
+      promptInput.placeholder = 'System prompt';
+      promptInput.dataset.charId = char.id;
+      promptInput.rows = 4;
+      promptInput.value = char.system_prompt || '';
+      promptInput.style.cssText = 'width:100%;background:rgba(255,255,255,.05);border:1px solid rgba(255,255,255,.1);border-radius:4px;color:var(--text);padding:6px 8px;font-size:12px;outline:none;resize:vertical;margin-bottom:6px;box-sizing:border-box;font-family:inherit';
+      editForm.appendChild(promptInput);
+
+      // Buttons
+      const buttonBox = document.createElement('div');
+      buttonBox.style.cssText = 'display:flex;gap:6px';
+
+      const applyBtn = document.createElement('button');
+      applyBtn.className = 'cron-btn run';
+      applyBtn.style.cssText = 'flex:1;padding:6px 8px;font-size:12px';
+      applyBtn.textContent = 'Apply';
+      applyBtn.onclick = () => applyCharacter(char.id, nameInput, descInput, promptInput);
+      buttonBox.appendChild(applyBtn);
+
+      const saveBtn = document.createElement('button');
+      saveBtn.className = 'cron-btn run';
+      saveBtn.style.cssText = 'flex:1;padding:6px 8px;font-size:12px';
+      saveBtn.textContent = 'Save';
+      saveBtn.onclick = () => saveCharacter(char.id, nameInput, descInput, promptInput);
+      buttonBox.appendChild(saveBtn);
+
+      const cancelBtn = document.createElement('button');
+      cancelBtn.className = 'cron-btn';
+      cancelBtn.style.cssText = 'flex:1;padding:6px 8px;font-size:12px';
+      cancelBtn.textContent = 'Cancel';
+      cancelBtn.onclick = () => toggleCharacterEdit(char.id);
+      buttonBox.appendChild(cancelBtn);
+
+      editForm.appendChild(buttonBox);
+      card.appendChild(editForm);
+
+      grid.appendChild(card);
+    }
+
+    box.appendChild(grid);
+  } catch(e) {
+    box.innerHTML = `<div style="padding:12px;color:var(--accent);font-size:12px">Error: ${esc(e.message)}</div>`;
+  }
+}
+
+function toggleCharacterEdit(charId) {
+  const form = $('char-edit-' + charId);
+  if (form) {
+    const isHidden = form.style.display === 'none';
+    // Hide all other forms
+    document.querySelectorAll('[id^="char-edit-"]').forEach(f => f.style.display = 'none');
+    // Toggle this form
+    form.style.display = isHidden ? '' : 'none';
+    if (isHidden) {
+      _editingCharacterId = charId;
+      // Focus first input
+      const input = form.querySelector('input');
+      if (input) input.focus();
+    } else {
+      _editingCharacterId = null;
+    }
+  }
+}
+
+async function applyCharacter(charId, nameInput, descInput, promptInput) {
+  try {
+    // Switch to this character
+    const response = await api(`/api/characters/${charId}/switch`, {
+      method: 'POST',
+      body: JSON.stringify({ character_id: charId })
+    });
+
+    if (response.ok) {
+      toast('Character switched to ' + response.character.name);
+      // Refresh the character list to update active status
+      await loadCharacters();
+    }
+  } catch (e) {
+    toast('Error switching character: ' + e.message, 'error');
+  }
+}
+
+async function saveCharacter(charId, nameInput, descInput, promptInput) {
+  try {
+    const response = await api(`/api/characters/${charId}/update`, {
+      method: 'POST',
+      body: JSON.stringify({
+        character_id: charId,
+        name: nameInput.value.trim() || 'Unnamed',
+        description: descInput.value.trim(),
+        system_prompt: promptInput.value.trim()
+      })
+    });
+
+    if (response.ok) {
+      toast('Character saved');
+      // Refresh the character list
+      await loadCharacters();
+    }
+  } catch (e) {
+    toast('Error saving character: ' + e.message, 'error');
+  }
 }
 
 // Event wiring
