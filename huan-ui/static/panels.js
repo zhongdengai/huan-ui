@@ -1295,29 +1295,49 @@ async function loadCharacters() {
       editForm.id = 'char-edit-' + char.id;
       editForm.style.cssText = 'display:none;border-top:1px solid rgba(255,255,255,.08);padding-top:8px;margin-top:8px';
 
-      // Name field
+      // Name field with label
+      const nameLabel = document.createElement('div');
+      nameLabel.style.cssText = 'font-size:11px;color:var(--muted);margin-bottom:3px;font-weight:500';
+      nameLabel.textContent = 'Name';
+      editForm.appendChild(nameLabel);
+
       const nameInput = document.createElement('input');
       nameInput.type = 'text';
       nameInput.placeholder = 'Character name';
       nameInput.value = char.name;
-      nameInput.style.cssText = 'width:100%;background:rgba(255,255,255,.05);border:1px solid rgba(255,255,255,.1);border-radius:4px;color:var(--text);padding:6px 8px;font-size:12px;outline:none;margin-bottom:6px;box-sizing:border-box';
+      nameInput.style.cssText = 'width:100%;background:rgba(255,255,255,.05);border:1px solid rgba(255,255,255,.1);border-radius:4px;color:var(--text);padding:6px 8px;font-size:12px;outline:none;margin-bottom:8px;box-sizing:border-box';
       editForm.appendChild(nameInput);
 
-      // Description field
+      // Description field with label and hint
+      const descLabel = document.createElement('div');
+      descLabel.style.cssText = 'font-size:11px;color:var(--muted);margin-bottom:3px;font-weight:500';
+      descLabel.textContent = 'Description';
+      editForm.appendChild(descLabel);
+
       const descInput = document.createElement('textarea');
       descInput.placeholder = 'Character description';
       descInput.value = char.description || '';
       descInput.rows = 2;
-      descInput.style.cssText = 'width:100%;background:rgba(255,255,255,.05);border:1px solid rgba(255,255,255,.1);border-radius:4px;color:var(--text);padding:6px 8px;font-size:12px;outline:none;resize:vertical;margin-bottom:6px;box-sizing:border-box;font-family:inherit';
+      descInput.style.cssText = 'width:100%;background:rgba(255,255,255,.05);border:1px solid rgba(255,255,255,.1);border-radius:4px;color:var(--text);padding:6px 8px;font-size:12px;outline:none;resize:vertical;margin-bottom:3px;box-sizing:border-box;font-family:inherit';
       editForm.appendChild(descInput);
 
-      // System prompt field
+      const descHint = document.createElement('div');
+      descHint.style.cssText = 'font-size:10px;color:rgba(255,255,255,.4);margin-bottom:8px;line-height:1.3';
+      descHint.textContent = '💡 仅用于UI显示，不作为AI指令';
+      editForm.appendChild(descHint);
+
+      // System prompt field with label
+      const promptLabel = document.createElement('div');
+      promptLabel.style.cssText = 'font-size:11px;color:var(--muted);margin-bottom:3px;font-weight:500';
+      promptLabel.textContent = 'System Prompt';
+      editForm.appendChild(promptLabel);
+
       const promptInput = document.createElement('textarea');
-      promptInput.placeholder = 'System prompt';
+      promptInput.placeholder = 'System prompt for AI behavior and personality';
       promptInput.dataset.charId = char.id;
       promptInput.rows = 4;
       promptInput.value = char.system_prompt || '';
-      promptInput.style.cssText = 'width:100%;background:rgba(255,255,255,.05);border:1px solid rgba(255,255,255,.1);border-radius:4px;color:var(--text);padding:6px 8px;font-size:12px;outline:none;resize:vertical;margin-bottom:6px;box-sizing:border-box;font-family:inherit';
+      promptInput.style.cssText = 'width:100%;background:rgba(255,255,255,.05);border:1px solid rgba(255,255,255,.1);border-radius:4px;color:var(--text);padding:6px 8px;font-size:12px;outline:none;resize:vertical;margin-bottom:8px;box-sizing:border-box;font-family:inherit';
       editForm.appendChild(promptInput);
 
       // Buttons
