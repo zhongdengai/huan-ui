@@ -1305,7 +1305,15 @@ async function loadCharacters() {
       nameInput.type = 'text';
       nameInput.placeholder = 'Character name';
       nameInput.value = char.name;
-      nameInput.style.cssText = 'width:100%;background:rgba(255,255,255,.05);border:1px solid rgba(255,255,255,.1);border-radius:4px;color:var(--text);padding:6px 8px;font-size:12px;outline:none;margin-bottom:8px;box-sizing:border-box';
+      nameInput.style.cssText = 'width:100%;background:rgba(255,255,255,.08);border:1px solid rgba(255,255,255,.15);border-radius:4px;color:rgba(255,255,255,.95);padding:6px 8px;font-size:12px;outline:none;margin-bottom:8px;box-sizing:border-box;transition:all .2s';
+      nameInput.addEventListener('focus', () => {
+        nameInput.style.background = 'rgba(255,255,255,.12)';
+        nameInput.style.borderColor = 'rgba(255,255,255,.25)';
+      });
+      nameInput.addEventListener('blur', () => {
+        nameInput.style.background = 'rgba(255,255,255,.08)';
+        nameInput.style.borderColor = 'rgba(255,255,255,.15)';
+      });
       editForm.appendChild(nameInput);
 
       // Description field with label and hint
@@ -1318,7 +1326,15 @@ async function loadCharacters() {
       descInput.placeholder = 'Character description';
       descInput.value = char.description || '';
       descInput.rows = 2;
-      descInput.style.cssText = 'width:100%;background:rgba(255,255,255,.05);border:1px solid rgba(255,255,255,.1);border-radius:4px;color:var(--text);padding:6px 8px;font-size:12px;outline:none;resize:vertical;margin-bottom:3px;box-sizing:border-box;font-family:inherit';
+      descInput.style.cssText = 'width:100%;background:rgba(255,255,255,.08);border:1px solid rgba(255,255,255,.15);border-radius:4px;color:rgba(255,255,255,.95);padding:6px 8px;font-size:12px;outline:none;resize:vertical;margin-bottom:3px;box-sizing:border-box;font-family:inherit;transition:all .2s';
+      descInput.addEventListener('focus', () => {
+        descInput.style.background = 'rgba(255,255,255,.12)';
+        descInput.style.borderColor = 'rgba(255,255,255,.25)';
+      });
+      descInput.addEventListener('blur', () => {
+        descInput.style.background = 'rgba(255,255,255,.08)';
+        descInput.style.borderColor = 'rgba(255,255,255,.15)';
+      });
       editForm.appendChild(descInput);
 
       const descHint = document.createElement('div');
@@ -1337,7 +1353,15 @@ async function loadCharacters() {
       promptInput.dataset.charId = char.id;
       promptInput.rows = 4;
       promptInput.value = char.system_prompt || '';
-      promptInput.style.cssText = 'width:100%;background:rgba(255,255,255,.05);border:1px solid rgba(255,255,255,.1);border-radius:4px;color:var(--text);padding:6px 8px;font-size:12px;outline:none;resize:vertical;margin-bottom:8px;box-sizing:border-box;font-family:inherit';
+      promptInput.style.cssText = 'width:100%;background:rgba(255,255,255,.08);border:1px solid rgba(255,255,255,.15);border-radius:4px;color:rgba(255,255,255,.95);padding:6px 8px;font-size:12px;outline:none;resize:vertical;margin-bottom:8px;box-sizing:border-box;font-family:inherit;transition:all .2s';
+      promptInput.addEventListener('focus', () => {
+        promptInput.style.background = 'rgba(255,255,255,.12)';
+        promptInput.style.borderColor = 'rgba(255,255,255,.25)';
+      });
+      promptInput.addEventListener('blur', () => {
+        promptInput.style.background = 'rgba(255,255,255,.08)';
+        promptInput.style.borderColor = 'rgba(255,255,255,.15)';
+      });
       editForm.appendChild(promptInput);
 
       // Buttons
