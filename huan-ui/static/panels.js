@@ -1406,7 +1406,7 @@ async function applyCharacter(charId, nameInput, descInput, promptInput) {
 
     if (response.ok) {
       const characterName = response.character.name;
-      toast('Character switched to ' + characterName);
+      showToast('Character switched to ' + characterName);
 
       // Update assistant name in settings to match character name
       try {
@@ -1430,7 +1430,7 @@ async function applyCharacter(charId, nameInput, descInput, promptInput) {
       }, 500);
     }
   } catch (e) {
-    toast('Error switching character: ' + e.message, 'error');
+    showToast('Error switching character: ' + e.message);
   }
 }
 
@@ -1448,7 +1448,7 @@ async function saveCharacter(charId, nameInput, descInput, promptInput) {
     });
 
     if (response.ok) {
-      toast('Character saved');
+      showToast('Character saved');
 
       // If this is the active character, update bot name too
       if (_charactersCache && _charactersCache.active === charId) {
@@ -1472,7 +1472,7 @@ async function saveCharacter(charId, nameInput, descInput, promptInput) {
       await loadCharacters();
     }
   } catch (e) {
-    toast('Error saving character: ' + e.message, 'error');
+    showToast('Error saving character: ' + e.message);
   }
 }
 
