@@ -1424,8 +1424,10 @@ async function applyCharacter(charId, nameInput, descInput, promptInput) {
         console.warn('Could not update bot name:', e.message);
       }
 
-      // Refresh the character list to update active status
-      await loadCharacters();
+      // Reload page after a short delay to sync all UI
+      setTimeout(() => {
+        location.reload();
+      }, 500);
     }
   } catch (e) {
     toast('Error switching character: ' + e.message, 'error');
