@@ -1461,6 +1461,7 @@ async function applyCharacter(charId, nameInput, descInput, promptInput) {
 async function saveCharacter(charId, nameInput, descInput, promptInput) {
   try {
     const newName = nameInput.value.trim() || 'Unnamed';
+    console.log('[saveCharacter] 开始保存人物', charId, '新名字:', newName);
     const response = await api(`/api/characters/${charId}/update`, {
       method: 'POST',
       body: JSON.stringify({
@@ -1471,11 +1472,14 @@ async function saveCharacter(charId, nameInput, descInput, promptInput) {
       })
     });
 
+    console.log('[saveCharacter] API响应:', response);
     if (response.ok) {
+      console.log('[saveCharacter] 保存成功，人物已更新');
       showToast('Character saved');
 
       // If this is the active character, update bot name too
       if (_charactersCache && _charactersCache.active === charId) {
+        console.log('[saveCharacter] 这是活跃人物，更新助手名称');
         try {
           await api('/api/settings', {
             method: 'POST',
