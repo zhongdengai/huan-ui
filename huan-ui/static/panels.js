@@ -1405,7 +1405,25 @@ async function applyCharacter(charId, nameInput, descInput, promptInput) {
     });
 
     if (response.ok) {
-      toast('Character switched to ' + response.character.name);
+      const characterName = response.character.name;
+      toast('Character switched to ' + characterName);
+
+      // Update assistant name in settings to match character name
+      try {
+        await api('/api/settings', {
+          method: 'POST',
+          body: JSON.stringify({ bot_name: characterName })
+        });
+
+        // Update global variable and refresh UI
+        window._botName = characterName;
+        if (typeof applyBotName === 'function') {
+          applyBotName();
+        }
+      } catch (e) {
+        console.warn('Could not update bot name:', e.message);
+      }
+
       // Refresh the character list to update active status
       await loadCharacters();
     }
@@ -1416,11 +1434,12 @@ async function applyCharacter(charId, nameInput, descInput, promptInput) {
 
 async function saveCharacter(charId, nameInput, descInput, promptInput) {
   try {
+    const newName = nameInput.value.trim() || 'Unnamed';
     const response = await api(`/api/characters/${charId}/update`, {
       method: 'POST',
       body: JSON.stringify({
         character_id: charId,
-        name: nameInput.value.trim() || 'Unnamed',
+        name: newName,
         description: descInput.value.trim(),
         system_prompt: promptInput.value.trim()
       })
@@ -1428,6 +1447,25 @@ async function saveCharacter(charId, nameInput, descInput, promptInput) {
 
     if (response.ok) {
       toast('Character saved');
+
+      // If this is the active character, update bot name too
+      if (_charactersCache && _charactersCache.active === charId) {
+        try {
+          await api('/api/settings', {
+            method: 'POST',
+            body: JSON.stringify({ bot_name: newName })
+          });
+
+          // Update global variable and refresh UI
+          window._botName = newName;
+          if (typeof applyBotName === 'function') {
+            applyBotName();
+          }
+        } catch (e) {
+          console.warn('Could not update bot name:', e.message);
+        }
+      }
+
       // Refresh the character list
       await loadCharacters();
     }
