@@ -1431,8 +1431,13 @@ async function loadCharacters() {
       header.appendChild(nameEl);
 
       const statusEl = document.createElement('span');
-      statusEl.style.cssText = 'font-size:11px;color:var(--muted);padding:2px 8px;background:rgba(255,255,255,.05);border-radius:4px';
-      statusEl.textContent = char.is_active ? '● Active' : '';
+      if (char.is_active) {
+        // Green indicator for active character
+        statusEl.style.cssText = 'font-size:11px;color:#4ade80;padding:2px 8px;background:rgba(74,222,128,.15);border-radius:4px;font-weight:500;border:1px solid rgba(74,222,128,.3)';
+        statusEl.textContent = '● Active';
+      } else {
+        statusEl.style.cssText = 'display:none';
+      }
       header.appendChild(statusEl);
 
       card.appendChild(header);

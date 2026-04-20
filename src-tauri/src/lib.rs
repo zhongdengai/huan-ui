@@ -46,9 +46,9 @@ fn show_window(app: tauri::AppHandle) {
 async fn chat(app: tauri::AppHandle, message: String, session_id: Option<String>) -> Result<String, String> {
     // 获取或创建 session ID
     let sid = if let Some(s) = session_id {
-        if !s.is_empty() { s } else { create_new_session()? }
+        if !s.is_empty() { s } else { create_new_session().await? }
     } else {
-        create_new_session()?
+        create_new_session().await?
     };
 
     eprintln!("[chat] Starting streaming call to huan-ui. Session: {}, Message: {}", sid, message);
@@ -76,11 +76,53 @@ async fn chat(app: tauri::AppHandle, message: String, session_id: Option<String>
         .map_err(|e| format!("Failed to call huan-ui API: {}", e))?;
 
     let status = response.status();
+
+    // session不存在时（服务器重启等），自动重建session并重试
+    if status == reqwest::StatusCode::NOT_FOUND {
+        eprintln!("[chat] Session {} not found (server restarted?), creating new session...", sid);
+        let new_sid = create_new_session().await?;
+        eprintln!("[chat] Retrying with new session: {}", new_sid);
+
+        // 立即保存新session ID到文件，让JS下次用正确的ID
+        let config_path = format!(
+            "{}/Documents/huanhuan/config/currentSession.txt",
+            std::env::var("HOME").unwrap_or_else(|_| ".".to_string())
+        );
+        let _ = std::fs::write(&config_path, &new_sid);
+
+        let retry_payload = serde_json::json!({
+            "session_id": new_sid,
+            "message": message,
+            "model": "MiniMax-M2.7",
+            "workspace": std::env::var("HOME").unwrap_or_else(|_| ".".to_string())
+        });
+        let retry_response = client
+            .post(url)
+            .json(&retry_payload)
+            .send()
+            .await
+            .map_err(|e| format!("Failed to retry huan-ui API: {}", e))?;
+
+        if !retry_response.status().is_success() {
+            let err = retry_response.text().await.unwrap_or_default();
+            return Err(format!("huan-ui API error after retry: {}", err));
+        }
+
+        // 通知JS用新session ID（作为特殊的"chat-stream-end"数据）
+        let _ = app.emit("chat-session-renewed", serde_json::json!({ "session_id": new_sid }));
+        return process_response(app, retry_response, new_sid).await;
+    }
+
     if !status.is_success() {
         let error_text = response.text().await.unwrap_or_default();
         return Err(format!("huan-ui API error ({}): {}", status, error_text));
     }
 
+    process_response(app, response, sid).await
+}
+
+/// 解析huan-ui响应，发送流式事件给前端，返回session ID
+async fn process_response(app: tauri::AppHandle, response: reqwest::Response, sid: String) -> Result<String, String> {
     // 收集完整响应（huan-ui 返回的是完整 JSON，多行格式）
     let mut full_response = String::new();
     use futures_util::StreamExt;
@@ -94,7 +136,6 @@ async fn chat(app: tauri::AppHandle, message: String, session_id: Option<String>
     }
 
     eprintln!("[stream] Full response length: {}", full_response.len());
-    // 安全地输出前 200 个字符
     let preview = full_response.chars().take(200).collect::<String>();
     eprintln!("[stream] Full response preview: {}", preview);
 
@@ -118,95 +159,82 @@ async fn chat(app: tauri::AppHandle, message: String, session_id: Option<String>
 
         // 检查是否包含 <think> 标签
         let has_think = reply_content.contains("<think>");
-        eprintln!("[stream] Contains <think> tag: {}", has_think);
-
-        // 如果没有 <think> 标签，立即发送 chat-think-end 事件（表示无思考过程，直接开始回复）
         if !has_think {
             let result = app.emit("chat-think-end", ());
-            eprintln!("[stream] No <think> tag found, emitted chat-think-end immediately: {:?}", result);
+            eprintln!("[stream] No <think> tag found, emitted chat-think-end: {:?}", result);
         }
 
-        // 逐个字符处理回复内容，过滤 <think> 标签
+        // 逐个字符处理，过滤 <think> 标签
         let mut inside_think = false;
         let mut i = 0;
         let mut sent_count = 0;
         let chars: Vec<char> = reply_content.chars().collect();
 
-        eprintln!("[stream] Total chars to process: {}", chars.len());
-
         while i < chars.len() {
             let substr: String = chars[i..].iter().collect();
-
             if !inside_think && substr.starts_with("<think>") {
                 inside_think = true;
                 i += 7;
-                eprintln!("[stream] Found <think> tag at position {}", i);
             } else if inside_think && substr.starts_with("</think>") {
                 inside_think = false;
                 i += 8;
-                eprintln!("[stream] Found </think> tag at position {}", i);
-                // think 结束
-                let result = app.emit("chat-think-end", ());
-                eprintln!("[stream] Emitted chat-think-end: {:?}", result);
+                let _ = app.emit("chat-think-end", ());
             } else if inside_think {
                 i += 1;
             } else {
-                // 发送给前端
-                let result = app.emit("chat-stream", serde_json::json!({ "token": chars[i].to_string() }));
-                if result.is_err() {
-                    eprintln!("[stream] ERROR emitting token at position {}: {:?}", i, result);
-                }
+                let _ = app.emit("chat-stream", serde_json::json!({ "token": chars[i].to_string() }));
                 sent_count += 1;
                 i += 1;
             }
         }
 
         eprintln!("[stream] Total chars sent: {}", sent_count);
-
-        // 发送流式结束信号
-        let result = app.emit("chat-stream-end", serde_json::json!({ "total": sent_count }));
-        eprintln!("[stream] Emitted chat-stream-end: {:?}", result);
+        let _ = app.emit("chat-stream-end", serde_json::json!({ "total": sent_count }));
     } else {
         eprintln!("[stream] Failed to parse JSON response");
         return Err("Failed to parse huan-ui JSON response".to_string());
     }
 
     eprintln!("[chat] Streaming complete for session: {}", sid);
-
-    // 返回会话 ID 给前端（可选，主要用于确认）
     Ok(sid)
 }
 
 /// 创建新会话，返回 session_id
-fn create_new_session() -> Result<String, String> {
-    // 使用简单的十六进制ID（huan-ui 兼容格式）
-    let random_id = format!("{:012x}", (std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_nanos() % 0xFFFFFFFFFFFF) as u64);
-    let session_id = random_id;
+async fn create_new_session() -> Result<String, String> {
+    // 调用 huan-ui 的 /api/session/new 端点创建会话
+    let client = reqwest::Client::builder()
+        .no_proxy()
+        .build()
+        .map_err(|e| format!("Failed to build HTTP client: {}", e))?;
 
-    // 创建会话文件到 ~/.hermes/webui/sessions/
-    let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
-    let sessions_dir = PathBuf::from(format!("{}/.hermes/webui/sessions", home));
+    let url = "http://localhost:8868/api/session/new";
+    let payload = serde_json::json!({});
 
-    fs::create_dir_all(&sessions_dir)
-        .map_err(|e| format!("Failed to create sessions directory: {}", e))?;
+    let response = client
+        .post(url)
+        .json(&payload)
+        .send()
+        .await
+        .map_err(|e| format!("Failed to call /api/session/new: {}", e))?;
 
-    let session_file = sessions_dir.join(format!("{}.json", session_id));
-    let session_data = serde_json::json!({
-        "session_id": session_id,
-        "title": "New Session",
-        "workspace": std::env::var("HOME").unwrap_or_else(|_| ".".to_string()),
-        "model": "MiniMax-M2.7",
-        "messages": []
-    });
+    let status = response.status();
+    if !status.is_success() {
+        let error_text = response.text().await.unwrap_or_default();
+        return Err(format!("Failed to create session ({}): {}", status, error_text));
+    }
 
-    fs::write(&session_file, serde_json::to_string_pretty(&session_data)
-        .map_err(|e| format!("Failed to serialize session: {}", e))?)
-        .map_err(|e| format!("Failed to write session file: {}", e))?;
+    // 解析响应获取 session_id
+    let json_val: serde_json::Value = response.json().await
+        .map_err(|e| format!("Failed to parse /api/session/new response: {}", e))?;
 
-    eprintln!("[chat] Created new session: {}", session_id);
+    let session_id = json_val
+        .get("session")
+        .and_then(|s| s.get("session_id"))
+        .and_then(|id| id.as_str())
+        .ok_or_else(|| "Missing session_id in response".to_string())?
+        .to_string();
+
+    eprintln!("[chat] Created new session via huan-ui API: {}", session_id);
     Ok(session_id)
 }
 

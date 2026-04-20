@@ -1149,9 +1149,15 @@ def _handle_chat_start(handler, body):
 
 
 def _handle_chat_sync(handler, body):
-    """Fallback synchronous chat endpoint (POST /api/chat). Not used by frontend."""
+    """Fallback synchronous chat endpoint (POST /api/chat). Used by desktop app."""
     from api.config import _get_session_agent_lock
-    s = get_session(body['session_id'])
+    session_id = body.get('session_id', '')
+    if not session_id:
+        return bad(handler, 'session_id is required')
+    try:
+        s = get_session(session_id)
+    except KeyError:
+        return bad(handler, f'Session not found: {session_id}', 404)
     msg = str(body.get('message', '')).strip()
     if not msg: return j(handler, {'error': 'empty message'}, status=400)
     workspace = Path(body.get('workspace') or s.workspace).expanduser().resolve()

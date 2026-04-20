@@ -675,6 +675,9 @@ async function sendMessage() {
   let tokenCount = 0;
   let firstTokenShown = false;
 
+  // 事件监听器引用（用于finally块清理）
+  let unlistenStream, unlistenThinkEnd, unlistenStreamEnd, unlistenSessionRenewed;
+
   try {
     // 如果没有会话 ID，Rust 后端会创建一个
     console.log('[sendMessage] Calling Rust backend with message:', text, 'Session:', currentSessionId);
@@ -686,7 +689,7 @@ async function sendMessage() {
     });
 
     // 监听流式事件：每个 token 到达时
-    const unlistenStream = await window.__TAURI__.event.listen('chat-stream', (event) => {
+    unlistenStream = await window.__TAURI__.event.listen('chat-stream', (event) => {
       const token = event.payload.token;
       fullReply += token;
       bubbleText.textContent += token;
@@ -711,17 +714,25 @@ async function sendMessage() {
     });
 
     // 监听 think 结束事件：清空"思考中…"，准备显示回复
-    const unlistenThinkEnd = await window.__TAURI__.event.listen('chat-think-end', () => {
+    unlistenThinkEnd = await window.__TAURI__.event.listen('chat-think-end', () => {
       debugLog('THINK-END', '思考标签结束，清空"思考中…"');
       bubbleText.textContent = ''; // 清空"思考中…"
       copyBtn.style.display = 'block'; // 显示复制按钮
     });
 
     // 监听流式结束事件
-    const unlistenStreamEnd = await window.__TAURI__.event.listen('chat-stream-end', (event) => {
+    unlistenStreamEnd = await window.__TAURI__.event.listen('chat-stream-end', (event) => {
       debugLog('STREAM-END', `流式结束，总共 ${event.payload.total} 个 token`);
       console.log('[stream] Stream ended, total tokens:', event.payload.total);
       streamEndResolve();
+    });
+
+    // 监听 session 被自动重建的事件（服务器重启后session失效时）
+    unlistenSessionRenewed = await window.__TAURI__.event.listen('chat-session-renewed', (event) => {
+      const newId = event.payload.session_id;
+      console.log('[session] Session renewed by backend:', newId);
+      currentSessionId = newId;
+      persistCurrentSessionId();
     });
 
     // 调用 Rust 后端的 chat 命令
@@ -733,29 +744,30 @@ async function sendMessage() {
     await streamEndPromise;
     debugLog('COMPLETE', `流式结束，共收到 ${tokenCount} 个 token，内容长度: ${fullReply.length}`);
 
-    // 更新当前会话 ID
-    if (!currentSessionId) {
-      console.log('[sendMessage] Received new session ID from backend:', sessionId);
+    // 每次成功后都保存/更新session ID（确保持久化）
+    if (sessionId && sessionId !== currentSessionId) {
+      console.log('[sendMessage] Session ID updated:', sessionId);
       currentSessionId = sessionId;
-      await persistCurrentSessionId();
-      console.log('[sendMessage] Saved new session ID:', currentSessionId);
-    } else {
-      console.log('[sendMessage] Using existing session ID:', currentSessionId);
     }
+    await persistCurrentSessionId();
+    console.log('[sendMessage] Session persisted:', currentSessionId);
+
+    unlistenSessionRenewed();
 
     // 保存完整回复用于复制
     bubble.dataset.fullText = fullReply;
     console.log('[sendMessage] Streaming complete. Full reply length:', fullReply.length);
 
-    // 清理事件监听器
-    unlistenStream();
-    unlistenThinkEnd();
-    unlistenStreamEnd();
-    console.log('[sendMessage] Event listeners cleaned up');
-
   } catch (err) {
     console.error('[huanhuan] sendMessage error:', err);
     showBubble(`错误: ${err}`, true, true);
+  } finally {
+    // 无论成功还是失败都清理事件监听器（防止内存泄漏）
+    if (unlistenStream) unlistenStream();
+    if (unlistenThinkEnd) unlistenThinkEnd();
+    if (unlistenStreamEnd) unlistenStreamEnd();
+    if (unlistenSessionRenewed) unlistenSessionRenewed();
+    console.log('[sendMessage] Event listeners cleaned up');
   }
 }
 
