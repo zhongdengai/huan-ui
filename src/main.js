@@ -309,36 +309,8 @@ function drawFrame(frameIndex) {
   const x = (canvasW - imgW) / 2;
   const y = (canvasH - imgH) / 2;
 
-  // 先绘制图像
+  // 绘制图像（PNG 已有正确 alpha，无需手动去背景）
   ctx.drawImage(img, x, y, imgW, imgH);
-
-  // 移除黑色和天青色背景
-  const imageData = ctx.getImageData(0, 0, canvasW, canvasH);
-  const data = imageData.data;
-
-  // 删除黑色背景和天青色背景
-  const BLACK_THRESHOLD = 40;
-  const CYAN_R = 135, CYAN_G = 206, CYAN_B = 235;
-  const CYAN_TOLERANCE = 30;
-
-  for (let i = 0; i < data.length; i += 4) {
-    const r = data[i];
-    const g = data[i + 1];
-    const b = data[i + 2];
-
-    // 移除黑色背景
-    if (r < BLACK_THRESHOLD && g < BLACK_THRESHOLD && b < BLACK_THRESHOLD) {
-      data[i + 3] = 0;
-    }
-    // 移除天青色背景
-    else if (Math.abs(r - CYAN_R) < CYAN_TOLERANCE &&
-             Math.abs(g - CYAN_G) < CYAN_TOLERANCE &&
-             Math.abs(b - CYAN_B) < CYAN_TOLERANCE) {
-      data[i + 3] = 0;
-    }
-  }
-
-  ctx.putImageData(imageData, 0, 0);
 }
 
 // 动画循环
@@ -394,11 +366,17 @@ async function switchCharacter(characterId) {
 
     // 更新本地配置
     currentCharacter = data.active;
+    currentSessionId = data.session_id || currentSessionId;  // 切换到该角色的专属session
     totalFrames = data.character?.frames_count || 0;
     frames = [];
     currentFrame = 0;
 
-    console.log(`[character] ✓ 已切换到: ${data.character.name} (${totalFrames} 帧)`);
+    // 保存session ID到Tauri后端持久化
+    if (data.session_id) {
+      persistCurrentSessionId();
+    }
+
+    console.log(`[character] ✓ 已切换到: ${data.character.name} (${totalFrames} 帧), session: ${currentSessionId}`);
 
     // 更新输入框 placeholder
     updateInputPlaceholder(data.character.name);
@@ -667,8 +645,9 @@ async function sendMessage() {
     return;
   }
 
-  // 显示"思考中"气泡（不显示复制按钮）
+  // 显示"思考中"气泡：绑定鼠标暂停/恢复监听器，但立刻取消计时，等回复完成后再开始 40 秒
   showBubble('思考中…', true, false);
+  if (bubbleHideTimer) { clearTimeout(bubbleHideTimer); bubbleHideTimer = null; }
 
   // 记录完整回复用于后续保存和复制
   let fullReply = '';
@@ -724,6 +703,9 @@ async function sendMessage() {
     unlistenStreamEnd = await window.__TAURI__.event.listen('chat-stream-end', (event) => {
       debugLog('STREAM-END', `流式结束，总共 ${event.payload.total} 个 token`);
       console.log('[stream] Stream ended, total tokens:', event.payload.total);
+      // 回复完整显示后，才启动 40 秒自动关闭计时
+      if (bubbleHideTimer) { clearTimeout(bubbleHideTimer); bubbleHideTimer = null; }
+      bubbleHideTimer = setTimeout(() => { bubble.classList.remove('showing'); }, 40000);
       streamEndResolve();
     });
 
