@@ -1685,9 +1685,28 @@ def _handle_character_switch(handler, body, parsed):
         print(f"[webui] ⚠️  Could not switch Hermes profile: {e}", flush=True)
         # Don't fail the API call if profile switch fails — character still switched
 
+    # ── Ensure this character has a session, get or create one ──────────────────
+    from api.models import Session
+    session_id = config.get('session_id', '')
+    if session_id:
+        # Verify the session file exists
+        session_file = SESSION_DIR / f'{session_id}.json'
+        if not session_file.exists():
+            session_id = ''  # Fall through to create new
+    if not session_id:
+        # Create a new session for this character
+        session_id = uuid.uuid4().hex[:12]
+        s = Session(session_id=session_id, profile=character_id)
+        s.save()
+        # Persist session_id back to character config
+        config['session_id'] = session_id
+        _save_character_config(character_id, config)
+        print(f"[webui] ✓ Created new session {session_id} for character: {character_id}", flush=True)
+
     return j(handler, {
         'ok': True,
         'active': character_id,
+        'session_id': session_id,
         'character': {
             'id': config.get('id', character_id),
             'name': config.get('name', 'Unknown'),
