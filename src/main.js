@@ -519,6 +519,9 @@ avatar.addEventListener('click', (e) => {
   inputWrap.classList.toggle('visible');
   if (inputWrap.classList.contains('visible')) {
     msgInput.focus();
+    // 预热 STT Python 进程 + 预初始化麦克风（消除首次 F1 延迟）
+    invoke('warm_stt').catch(() => {});
+    prewarmMic();
   }
 });
 
@@ -740,6 +743,19 @@ async function sendMessage() {
     bubble.dataset.fullText = fullReply;
     console.log('[sendMessage] Streaming complete. Full reply length:', fullReply.length);
 
+    // 自动朗读 AI 回复
+    if (fullReply) {
+      try {
+        await invoke('stop_speaking'); // 停止上一条朗读
+        await invoke('speak_text', { text: fullReply });
+        isSpeaking = true;
+        voiceBtn.textContent = '⏹';
+        voiceBtn.title = '停止朗读';
+      } catch (err) {
+        console.error('[TTS] 自动朗读失败:', err);
+      }
+    }
+
   } catch (err) {
     console.error('[huanhuan] sendMessage error:', err);
     showBubble(`错误: ${err}`, true, true);
@@ -769,6 +785,159 @@ copyBtn.addEventListener('click', async (e) => {
     }, 1500);
   } catch (err) {
     console.error('[huanhuan] Failed to copy:', err);
+  }
+});
+
+// ── TTS：🔊 按钮朗读 AI 回复 ─────────────────────────────────────
+let isSpeaking = false;
+
+voiceBtn.addEventListener('click', async (e) => {
+  e.stopPropagation();
+  if (!isSpeaking) {
+    const text = bubble.dataset.fullText;
+    if (!text) return;
+    try {
+      await invoke('speak_text', { text });
+      isSpeaking = true;
+      voiceBtn.textContent = '⏹';
+      voiceBtn.title = '停止朗读';
+    } catch (err) {
+      console.error('[TTS] 朗读失败:', err);
+    }
+  } else {
+    try {
+      await invoke('stop_speaking');
+      isSpeaking = false;
+      voiceBtn.textContent = '🔊';
+      voiceBtn.title = '语音';
+    } catch (err) {
+      console.error('[TTS] 停止失败:', err);
+    }
+  }
+});
+
+// 气泡隐藏时自动停止朗读
+bubble.addEventListener('animationend', () => {
+  if (!bubble.classList.contains('showing') && isSpeaking) {
+    invoke('stop_speaking').catch(() => {});
+    isSpeaking = false;
+    voiceBtn.textContent = '🔊';
+    voiceBtn.title = '语音';
+  }
+});
+
+// ── STT：🎤 语音输入（getUserMedia 录音 → Python/Google 识别）────
+let isRecording = false;
+let mediaRecorder = null;
+let audioChunks = [];
+let recordingStream = null;
+let micPermissionGranted = false; // 记录麦克风权限是否已获得
+
+// 预请求麦克风权限（在用户第一次点击时调用，之后 F1 无需再弹权限框）
+async function prewarmMic() {
+  if (micPermissionGranted) return;
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    stream.getTracks().forEach(t => t.stop()); // 立即释放，只是为了获取权限
+    micPermissionGranted = true;
+    console.log('[STT] 麦克风权限已获取');
+  } catch (err) {
+    console.warn('[STT] 麦克风权限获取失败:', err);
+  }
+}
+
+async function startRecording() {
+  if (isRecording) return;
+  try {
+    recordingStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    micPermissionGranted = true;
+  } catch (err) {
+    console.error('[STT] 获取麦克风失败:', err);
+    showBubble('无法访问麦克风，请检查系统权限', false, false);
+    return;
+  }
+
+  const mimeType = MediaRecorder.isTypeSupported('audio/mp4')
+    ? 'audio/mp4'
+    : MediaRecorder.isTypeSupported('audio/webm')
+    ? 'audio/webm'
+    : '';
+
+  audioChunks = [];
+  mediaRecorder = new MediaRecorder(recordingStream, mimeType ? { mimeType } : {});
+  mediaRecorder.ondataavailable = (ev) => { if (ev.data.size > 0) audioChunks.push(ev.data); };
+  mediaRecorder.start(100);
+
+  isRecording = true;
+  voiceInputBtn.textContent = '⏹';
+  voiceInputBtn.title = '停止录音';
+  voiceInputBtn.style.background = 'rgba(255, 80, 80, 0.5)';
+  showBubble('🎤 正在录音...', false, false);
+}
+
+async function stopRecording() {
+  if (!isRecording || !mediaRecorder) return;
+
+  isRecording = false;
+  voiceInputBtn.textContent = '🎤';
+  voiceInputBtn.title = '语音输入';
+  voiceInputBtn.style.background = '';
+
+  mediaRecorder.stop();
+  recordingStream.getTracks().forEach(t => t.stop());
+  showBubble('🔍 正在识别...', false, false);
+
+  mediaRecorder.onstop = async () => {
+    try {
+      const mimeType = mediaRecorder.mimeType || 'audio/mp4';
+      const blob = new Blob(audioChunks, { type: mimeType });
+
+      const base64 = await new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onloadend = () => resolve(reader.result.split(',')[1]);
+        reader.onerror = reject;
+        reader.readAsDataURL(blob);
+      });
+
+      const text = await invoke('transcribe_audio', {
+        audioBase64: base64,
+        mimeType: mimeType
+      });
+
+      bubble.classList.remove('showing');
+
+      if (text && text.trim()) {
+        msgInput.value = text.trim();
+        sendMessage(text.trim());
+      } else {
+        showBubble('未识别到内容，请再试一次', false, false);
+      }
+    } catch (err) {
+      console.error('[STT] 识别失败:', err);
+      showBubble(`语音识别失败: ${err}`, false, false);
+    }
+  };
+}
+
+// 🎤 按钮点击
+voiceInputBtn.addEventListener('click', async (e) => {
+  e.stopPropagation();
+  if (!isRecording) { await startRecording(); } else { await stopRecording(); }
+});
+
+// F1 按下开始录音，松开结束并发送（全局快捷键，无需先点击人物）
+document.addEventListener('keydown', async (e) => {
+  if (e.key === 'F1' && !isRecording) {
+    e.preventDefault();
+    // 显示输入框（让用户知道在录音状态）
+    inputWrap.classList.add('visible');
+    await startRecording();
+  }
+});
+document.addEventListener('keyup', async (e) => {
+  if (e.key === 'F1' && isRecording) {
+    e.preventDefault();
+    await stopRecording();
   }
 });
 
@@ -872,9 +1041,32 @@ updateDebugButtonText();
 quitBtn.addEventListener('click', () => invoke('quit_app'));
 
 // ── 页面加载时初始化会话和动画 ────────────────────────────────────
+// 等待 huan-ui 就绪（最多 30 秒，每 1 秒重试一次）
+async function waitForBackend(maxRetries = 30) {
+  for (let i = 0; i < maxRetries; i++) {
+    try {
+      const res = await fetch(`${BACKEND_URL}/api/characters/list`, { signal: AbortSignal.timeout(1500) });
+      if (res.ok) return true;
+    } catch (e) {
+      // 还没好，继续等
+    }
+    console.log(`[init] 等待 huan-ui 启动... (${i + 1}/${maxRetries})`);
+    await new Promise(r => setTimeout(r, 1000));
+  }
+  return false;
+}
+
 // 由于脚本在页面最后，DOMContentLoaded可能已经触发，所以检查readyState
 async function initializeApp() {
   initCanvas();
+
+  // 等待 huan-ui 就绪再初始化
+  const backendReady = await waitForBackend();
+  if (!backendReady) {
+    console.warn('[init] ⚠️  huan-ui 30秒内未就绪，跳过动画加载');
+    await initializeSession();
+    return;
+  }
 
   // 从服务器加载人物配置
   await initCharacter();
@@ -891,6 +1083,9 @@ async function initializeApp() {
 
   // 初始化会话
   await initializeSession();
+
+  // 启动时预热 STT，消除第一次按 F1 的延迟
+  invoke('warm_stt').catch(() => {});
 }
 
 if (document.readyState === 'loading') {

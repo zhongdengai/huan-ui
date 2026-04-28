@@ -4,11 +4,12 @@
   "version": "0.1.0",
   "type": "module",
   "scripts": {
-    "dev": "tauri dev",
+    "dev": "concurrently --kill-others-on-fail -n huan-ui,tauri -c cyan,green \"bash huan-ui/start-huan-ui.sh\" \"tauri dev\"",
     "build": "tauri build",
     "tauri": "tauri"
   },
   "devDependencies": {
-    "@tauri-apps/cli": "^2"
+    "@tauri-apps/cli": "^2",
+    "concurrently": "^9.2.1"
   }
 }

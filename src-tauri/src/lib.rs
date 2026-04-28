@@ -4,6 +4,99 @@ use std::path::PathBuf;
 use std::process::Command;
 use chrono::Local;
 use regex;
+use base64::{Engine as _, engine::general_purpose};
+use std::io::{BufRead, BufReader, Write};
+use std::sync::Mutex;
+
+/// STT 常驻 Python 进程的状态
+struct SttServer {
+    script_path: PathBuf,
+    stdin:  Option<std::process::ChildStdin>,
+    stdout: Option<BufReader<std::process::ChildStdout>>,
+}
+
+impl SttServer {
+    fn new(script_path: PathBuf) -> Self {
+        SttServer { script_path, stdin: None, stdout: None }
+    }
+
+    /// 确保 Python 服务进程在运行，返回 Err 说明原因
+    fn ensure_running(&mut self) -> Result<(), String> {
+        // 如果 stdin 管道还活着，认为进程在运行
+        if self.stdin.is_some() {
+            return Ok(());
+        }
+        self.start()
+    }
+
+    fn start(&mut self) -> Result<(), String> {
+        let python = ["/opt/homebrew/bin/python3", "/usr/local/bin/python3", "python3"]
+            .iter()
+            .find(|p| std::path::Path::new(p).exists())
+            .copied()
+            .unwrap_or("python3");
+        let mut child = std::process::Command::new(python)
+            .arg(&self.script_path)
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .map_err(|e| format!("无法启动 STT 服务: {}", e))?;
+
+        let child_stdin  = child.stdin.take().ok_or("无法获取 stdin")?;
+        let child_stdout = child.stdout.take().ok_or("无法获取 stdout")?;
+        let mut reader   = BufReader::new(child_stdout);
+
+        // 等待 READY 信号（最多 10 秒）
+        let mut line = String::new();
+        reader.read_line(&mut line).map_err(|e| format!("等待 STT 就绪失败: {}", e))?;
+        let line = line.trim();
+        if line == "IMPORT_ERROR" {
+            return Err("SpeechRecognition 未安装，请运行: pip3 install --break-system-packages SpeechRecognition".into());
+        }
+        if line != "READY" {
+            return Err(format!("STT 服务启动异常: {}", line));
+        }
+
+        // 把子进程 move 出去，防止被 drop
+        std::mem::forget(child);
+
+        self.stdin  = Some(child_stdin);
+        self.stdout = Some(reader);
+        Ok(())
+    }
+
+    /// 发送识别任务，返回识别结果
+    fn recognize(&mut self, wav_path: &str, result_path: &str, lang: &str) -> Result<String, String> {
+        self.ensure_running()?;
+
+        // 发送任务行
+        if let Some(stdin) = &mut self.stdin {
+            writeln!(stdin, "{}|{}|{}", wav_path, result_path, lang)
+                .map_err(|_| {
+                    // 管道断了，清除状态让下次重启
+                    self.stdin  = None;
+                    self.stdout = None;
+                    "STT 服务管道断开，请重试".to_string()
+                })?;
+        }
+
+        // 等待 DONE
+        if let Some(reader) = &mut self.stdout {
+            let mut line = String::new();
+            reader.read_line(&mut line).map_err(|_| {
+                self.stdin  = None;
+                self.stdout = None;
+                "STT 服务无响应，请重试".to_string()
+            })?;
+        }
+
+        // 读取结果文件
+        let result = fs::read_to_string(result_path).unwrap_or_default();
+        let _ = fs::remove_file(result_path);
+        Ok(result.trim().to_string())
+    }
+}
 
 #[tauri::command]
 fn quit_app(app: tauri::AppHandle) {
@@ -426,6 +519,138 @@ fn load_current_session_id() -> Result<Option<String>, String> {
     }
 }
 
+/// TTS：调用 Mac 原生 say 命令朗读文字（使用系统默认语音）
+#[tauri::command]
+fn speak_text(text: String) -> Result<(), String> {
+    // 先停止任何正在进行的朗读
+    let _ = std::process::Command::new("pkill").arg("-f").arg("say ").output();
+
+    // 不指定 -v，直接使用系统朗读设置中的默认语音
+    std::process::Command::new("say")
+        .arg(&text)
+        .spawn()
+        .map_err(|e| format!("Failed to speak: {}", e))?;
+
+    Ok(())
+}
+
+/// TTS：停止当前朗读
+#[tauri::command]
+fn stop_speaking() -> Result<(), String> {
+    let _ = std::process::Command::new("pkill").arg("-f").arg("say ").output();
+    Ok(())
+}
+
+/// 找到 stt_server.py 脚本路径
+fn find_stt_script() -> Option<PathBuf> {
+    let exe_dir = std::env::current_exe()
+        .ok()
+        .and_then(|p| p.parent().map(|d| d.to_path_buf()))?;
+    [
+        exe_dir.join("../Resources/scripts/stt_server.py"),
+        exe_dir.join("../../src-tauri/scripts/stt_server.py"),
+        exe_dir.join("../../../src-tauri/scripts/stt_server.py"),
+        exe_dir.join("../../../../src-tauri/scripts/stt_server.py"),
+    ]
+    .into_iter()
+    .find(|p| p.exists())
+}
+
+/// STT：预热 Python 常驻进程（在输入框打开时调用，消除首次识别延迟）
+#[tauri::command]
+fn warm_stt(state: tauri::State<Mutex<SttServer>>) -> Result<(), String> {
+    let mut stt = state.lock().unwrap();
+    stt.ensure_running()
+}
+
+/// STT：接收前端录音 base64，转 WAV，交给常驻 Python 进程识别
+#[tauri::command]
+fn transcribe_audio(
+    audio_base64: String,
+    mime_type: String,
+    state: tauri::State<Mutex<SttServer>>,
+) -> Result<String, String> {
+    // 解码 base64
+    let audio_bytes = general_purpose::STANDARD
+        .decode(&audio_base64)
+        .map_err(|e| format!("base64解码失败: {}", e))?;
+
+    // 扩展名
+    let ext = if mime_type.contains("mp4") || mime_type.contains("m4a") { "m4a" }
+              else if mime_type.contains("webm") || mime_type.contains("ogg") { "webm" }
+              else if mime_type.contains("wav") { "wav" }
+              else { "m4a" };
+
+    let ts = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis();
+
+    let tmp_path = std::env::temp_dir().join(format!("huanhuan_stt_{}.{}", ts, ext));
+    fs::write(&tmp_path, &audio_bytes).map_err(|e| format!("保存音频失败: {}", e))?;
+
+    let file_size = fs::metadata(&tmp_path).map(|m| m.len()).unwrap_or(0);
+    if file_size < 500 {
+        let _ = fs::remove_file(&tmp_path);
+        return Err(format!("录音过短 ({} bytes)，请检查麦克风权限", file_size));
+    }
+
+    // afconvert → WAV 16kHz（Python speech_recognition 可直接读）
+    let wav_path = std::env::temp_dir().join(format!("huanhuan_stt_{}.wav", ts));
+    let convert_ok = std::process::Command::new("afconvert")
+        .args(["-f", "WAVE", "-d", "LEI16@16000"])
+        .arg(&tmp_path).arg(&wav_path)
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false);
+
+    let rec_path = if convert_ok && wav_path.exists() { wav_path.clone() } else { tmp_path.clone() };
+    let result_path = std::env::temp_dir().join(format!("huanhuan_stt_result_{}.txt", ts));
+
+    // 使用常驻 Python 进程识别
+    let raw = {
+        let mut stt = state.lock().unwrap();
+        stt.recognize(
+            rec_path.to_str().unwrap_or(""),
+            result_path.to_str().unwrap_or(""),
+            "zh-CN",
+        )?
+    };
+
+    // 清理临时文件
+    let _ = fs::remove_file(&tmp_path);
+    let _ = fs::remove_file(&wav_path);
+
+    // 解析结果
+    if raw.starts_with("ERROR:") {
+        let code = raw.trim_start_matches("ERROR:");
+        let msg = if code.contains("unknown_value") {
+            "未识别到内容，请说清楚后重试".to_string()
+        } else if code.contains("empty_result") {
+            "未识别到内容，请重试".to_string()
+        } else if code.contains("google_api") {
+            format!("网络错误，请检查联网: {}", code.trim_start_matches("google_api:"))
+        } else {
+            format!("识别失败: {}", code)
+        };
+        Err(msg)
+    } else if raw.is_empty() {
+        Err("识别无结果，请检查网络连接".to_string())
+    } else {
+        Ok(raw)
+    }
+}
+
+/// STT：停止语音识别（中断常驻进程，下次会自动重启）
+#[tauri::command]
+fn stop_voice_recognition(state: tauri::State<Mutex<SttServer>>) -> Result<(), String> {
+    let mut stt = state.lock().unwrap();
+    stt.stdin  = None;
+    stt.stdout = None;
+    let _ = std::process::Command::new("pkill").arg("-f").arg("stt_server.py").output();
+    Ok(())
+}
+
 /// 检查端口是否已被占用
 fn is_port_in_use(port: u16) -> bool {
     match std::net::TcpListener::bind(("127.0.0.1", port)) {
@@ -453,8 +678,10 @@ fn start_huan_ui() {
 
     // 在后台启动 huan-ui 脚本
     std::thread::spawn(move || {
-        match Command::new("bash")
-            .arg(&start_script)
+        match Command::new("/bin/zsh")
+            .arg("-l")   // login shell，加载 .zshrc/.zprofile，继承 PATH 和 venv
+            .arg("-c")
+            .arg(format!("bash {}", start_script.display()))
             .spawn()
         {
             Ok(mut child) => {
@@ -489,9 +716,19 @@ pub fn run() {
             get_all_sessions,
             get_session,
             save_current_session_id,
-            load_current_session_id
+            load_current_session_id,
+            speak_text,
+            stop_speaking,
+            warm_stt,
+            transcribe_audio,
+            stop_voice_recognition
         ])
         .setup(|app| {
+            // 注册 STT 常驻进程状态
+            let stt_script = find_stt_script()
+                .unwrap_or_else(|| PathBuf::from("stt_server.py"));
+            app.manage(Mutex::new(SttServer::new(stt_script)));
+
             // 启动 huan-ui 服务
             start_huan_ui();
 
@@ -502,9 +739,8 @@ pub fn run() {
                 let scale = monitor.scale_factor();
                 let width = 300.0;
                 let height = 360.0;
-                let margin = 40.0;
-                let x = (screen_size.width as f64 / scale) - width - margin;
-                let y = (screen_size.height as f64 / scale) - height - margin;
+                let x = (screen_size.width as f64 / scale) - width - 80.0;  // 右边距 +40px
+                let y = (screen_size.height as f64 / scale) - height - 140.0; // 底部边距 +100px
                 window.set_position(tauri::PhysicalPosition::new(
                     (x * scale) as i32,
                     (y * scale) as i32,
