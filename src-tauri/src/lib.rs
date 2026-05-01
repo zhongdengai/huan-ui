@@ -519,6 +519,51 @@ fn load_current_session_id() -> Result<Option<String>, String> {
     }
 }
 
+/// 保存输入框位置
+#[tauri::command]
+fn save_input_position(left: f64, top: f64) -> Result<(), String> {
+    let config_dir = PathBuf::from(format!(
+        "{}/Documents/huanhuan/config",
+        std::env::var("HOME").unwrap_or_else(|_| ".".to_string())
+    ));
+
+    fs::create_dir_all(&config_dir)
+        .map_err(|e| format!("Failed to create config directory: {}", e))?;
+
+    let config_file = config_dir.join("inputPosition.txt");
+    let content = format!("{},{}", left as i32, top as i32);
+
+    fs::write(&config_file, &content)
+        .map_err(|e| format!("Failed to save input position: {}", e))?;
+
+    Ok(())
+}
+
+/// 读取保存的输入框位置
+#[tauri::command]
+fn load_input_position() -> Result<Option<(f64, f64)>, String> {
+    let config_file = PathBuf::from(format!(
+        "{}/Documents/huanhuan/config/inputPosition.txt",
+        std::env::var("HOME").unwrap_or_else(|_| ".".to_string())
+    ));
+
+    if !config_file.exists() {
+        return Ok(None);
+    }
+
+    let content = fs::read_to_string(&config_file)
+        .map_err(|e| format!("Failed to read input position file: {}", e))?;
+
+    let parts: Vec<&str> = content.trim().split(',').collect();
+    if parts.len() == 2 {
+        if let (Ok(left), Ok(top)) = (parts[0].parse::<f64>(), parts[1].parse::<f64>()) {
+            return Ok(Some((left, top)));
+        }
+    }
+
+    Ok(None)
+}
+
 /// TTS：调用 Mac 原生 say 命令朗读文字（使用系统默认语音）
 #[tauri::command]
 fn speak_text(text: String) -> Result<(), String> {
@@ -717,6 +762,8 @@ pub fn run() {
             get_session,
             save_current_session_id,
             load_current_session_id,
+            save_input_position,
+            load_input_position,
             speak_text,
             stop_speaking,
             warm_stt,
@@ -740,7 +787,7 @@ pub fn run() {
                 let width = 300.0;
                 let height = 360.0;
                 let x = (screen_size.width as f64 / scale) - width - 80.0;  // 右边距 +40px
-                let y = (screen_size.height as f64 / scale) - height - 140.0; // 底部边距 +100px
+                let y = (screen_size.height as f64 / scale) - height - 140.0 - 150.0; // 底部边距 +100px，额外上移150px为气泡腾出空间
                 window.set_position(tauri::PhysicalPosition::new(
                     (x * scale) as i32,
                     (y * scale) as i32,

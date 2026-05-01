@@ -513,21 +513,179 @@ document.addEventListener('mousemove', (e) => {
   pendingY = e.screenY;
 });
 
+// ── 气泡拖动（Shift + 左键）────────────────────────────────────────
+let bubbleDragging = false;
+let bubbleStartX, bubbleStartY, bubbleStartLeft = 0, bubbleStartTop = 0;
+let bubbleAnchorY = 150; // 气泡底部锚点（顶部透明区底边），拖动后更新
+let bubbleSavedLeft = 5; // 气泡左侧位置，拖动后更新
+
+document.addEventListener('mousedown', (e) => {
+  if (e.button === 0 && e.shiftKey && bubble.classList.contains('showing')) {  // Shift + 左键
+    bubbleDragging = true;
+    bubbleStartX = e.clientX;
+    bubbleStartY = e.clientY;
+    // 获取当前气泡的 left 和 top 值（相对于容器）
+    bubbleStartLeft = parseInt(bubble.style.left) || 5;
+    bubbleStartTop = parseInt(bubble.style.top) || 175;
+    e.preventDefault();
+  }
+});
+
+document.addEventListener('mousemove', (e) => {
+  if (!bubbleDragging) return;
+
+  const dx = e.clientX - bubbleStartX;
+  const dy = e.clientY - bubbleStartY;
+
+  const newLeft = bubbleStartLeft + dx;
+  const newTop = bubbleStartTop + dy;
+
+  // fixed 定位相对于窗口，无需限制边界，气泡可以自由移动到任何位置
+  bubble.style.left = newLeft + 'px';
+  bubble.style.top = newTop + 'px';
+});
+
+document.addEventListener('mouseup', (e) => {
+  if (bubbleDragging) {
+    // 保存拖动后的位置：底部锚点 = top + 当前高度
+    bubbleAnchorY = parseInt(bubble.style.top || 0) + bubble.offsetHeight;
+    bubbleSavedLeft = parseInt(bubble.style.left || 5);
+  }
+  bubbleDragging = false;
+});
+
+// ── 输入框拖动（Alt + 左键）+ 位置持久化存储 ────────────────────
+let inputDragging = false;
+let inputStartX, inputStartY, inputStartLeft = 0, inputStartTop = 0;
+let savedInputLeft = null;  // 当前内存中保存的位置
+let savedInputTop = null;
+
+// 应用启动时读取保存的输入框位置
+async function loadSavedInputPosition() {
+  try {
+    const result = await invoke('load_input_position');
+    if (result && result[0] !== null && result[1] !== null) {
+      savedInputLeft = result[0];
+      savedInputTop = result[1];
+      console.log('[input] 已读取保存的位置:', savedInputLeft, savedInputTop);
+    }
+  } catch (err) {
+    console.warn('[input] 读取保存的位置失败:', err);
+  }
+}
+
+document.addEventListener('mousedown', (e) => {
+  if (e.button === 0 && e.altKey && inputWrap.classList.contains('visible')) {  // Alt + 左键
+    inputDragging = true;
+    inputStartX = e.clientX;
+    inputStartY = e.clientY;
+
+    // 获取当前输入框的实际位置
+    const currentRect = inputWrap.getBoundingClientRect();
+    const appRect = app.getBoundingClientRect();
+
+    inputStartLeft = currentRect.left - appRect.left;
+    inputStartTop = currentRect.top - appRect.top;
+
+    // 改为 absolute 定位，并立即设置位置以保持视觉位置不变
+    if (inputWrap.style.position !== 'absolute') {
+      inputWrap.style.position = 'absolute';
+      inputWrap.style.left = inputStartLeft + 'px';
+      inputWrap.style.top = inputStartTop + 'px';
+    }
+    e.preventDefault();
+  }
+});
+
+document.addEventListener('mousemove', (e) => {
+  if (!inputDragging) return;
+
+  const dx = e.clientX - inputStartX;
+  const dy = e.clientY - inputStartY;
+
+  const newLeft = inputStartLeft + dx;
+  const newTop = inputStartTop + dy;
+
+  // 限制在窗口内（窗口 450×750，输入框不能跑出去）
+  const maxLeft = 450 - inputWrap.offsetWidth;
+  const maxTop = 750 - inputWrap.offsetHeight;
+  const clampedLeft = Math.max(0, Math.min(newLeft, maxLeft));
+  const clampedTop = Math.max(150, Math.min(newTop, maxTop)); // 顶部不超过气泡区
+
+  inputWrap.style.left = clampedLeft + 'px';
+  inputWrap.style.top = clampedTop + 'px';
+
+  // 保存位置
+  savedInputLeft = clampedLeft;
+  savedInputTop = clampedTop;
+});
+
+document.addEventListener('mouseup', (e) => {
+  inputDragging = false;
+  // 松开鼠标时，保存当前位置到文件
+  if (savedInputLeft !== null && savedInputTop !== null) {
+    invoke('save_input_position', { left: savedInputLeft, top: savedInputTop })
+      .catch(err => console.warn('[input] 保存位置失败:', err));
+  }
+});
+
+// 恢复保存的输入框位置
+function restoreInputPosition() {
+  if (savedInputLeft !== null && savedInputTop !== null) {
+    inputWrap.style.position = 'absolute';
+    inputWrap.style.left = savedInputLeft + 'px';
+    inputWrap.style.top = savedInputTop + 'px';
+  }
+}
+
 // ── 输入框（默认隐藏，左键单击头像出现/隐藏）───────────────────────
 avatar.addEventListener('click', (e) => {
   e.stopPropagation();
+  const isShowing = !inputWrap.classList.contains('visible');
   inputWrap.classList.toggle('visible');
-  if (inputWrap.classList.contains('visible')) {
-    msgInput.focus();
+
+  if (isShowing) {
+    // 显示输入框 — 恢复保存的位置
+    setTimeout(() => {
+      restoreInputPosition();
+      msgInput.focus();
+    }, 0);
     // 预热 STT Python 进程 + 预初始化麦克风（消除首次 F1 延迟）
     invoke('warm_stt').catch(() => {});
     prewarmMic();
+  } else {
+    // 隐藏输入框 — 恢复默认定位方式
+    inputWrap.style.position = 'relative';
+    inputWrap.style.left = '';
+    inputWrap.style.top = '';
   }
 });
 
 // 阻止原生右键菜单（防止闪烁）
 document.addEventListener('contextmenu', (e) => {
   e.preventDefault();
+});
+
+// ── 文本框自动调整高度 ────────────────────────────────────────────
+function autoResizeTextInput() {
+  // 重置高度为 auto 以获取真实的 scrollHeight
+  msgInput.style.height = 'auto';
+
+  // 获取内容高度
+  const scrollHeight = msgInput.scrollHeight;
+
+  // 限制在 36px 到 150px 之间
+  const minHeight = 36;
+  const maxHeight = 150;
+  const newHeight = Math.max(minHeight, Math.min(scrollHeight, maxHeight));
+
+  msgInput.style.height = newHeight + 'px';
+}
+
+// 在输入、粘贴、删除时调整高度
+msgInput.addEventListener('input', autoResizeTextInput);
+msgInput.addEventListener('paste', () => {
+  setTimeout(autoResizeTextInput, 0);
 });
 
 msgInput.addEventListener('keypress', (e) => {
@@ -549,12 +707,13 @@ function updateBubbleHeight() {
   const padding = 24;
   const finalHeight = Math.min(contentHeight + padding, maxHeight);
 
-  const baselineY = 245;
-  const newTop = baselineY - finalHeight;
+  // 用保存的锚点，向上增长
+  const newTop = Math.max(0, bubbleAnchorY - finalHeight);
+  const visibleHeight = bubbleAnchorY - newTop;
 
   bubble.style.top = newTop + 'px';
-  bubble.style.height = finalHeight + 'px';
-  bubble.style.overflowY = finalHeight >= maxHeight ? 'auto' : 'hidden';
+  bubble.style.height = visibleHeight + 'px';
+  bubble.style.overflowY = finalHeight > bubbleAnchorY ? 'auto' : 'hidden';
 }
 
 function debugLog(label, message) {
@@ -582,24 +741,32 @@ function showBubble(text, persist = false, showCopyBtn = false) {
   bubbleText.textContent = text;
   bubble.classList.remove('leaving');
   bubble.classList.add('showing');
+
+  // 针对小丽角色的特殊样式
+  if (currentCharacter === 'test') {
+    bubble.classList.add('bubble-xiaoli');
+  } else {
+    bubble.classList.remove('bubble-xiaoli');
+  }
+
   bubble.getBoundingClientRect();
   bubble.classList.add('entering');
   bubble.addEventListener('animationend', () => bubble.classList.remove('entering'), { once: true });
 
-  // 动态调整气泡高度：最多200px后用滚动条
+  // 动态调整气泡高度：底部锚定在拖动保存的位置，向上增长
   setTimeout(() => {
-    const maxHeight = 200; // 最多200px，之后用滚动条
     const contentHeight = bubbleText.scrollHeight;
-    const padding = 24; // top + bottom padding
-    const finalHeight = Math.min(contentHeight + padding, maxHeight);
+    const padding = 24;
+    const finalHeight = contentHeight + padding;
 
-    // 气泡底部固定在 245px，向上增长
-    const baselineY = 245;
-    const newTop = baselineY - finalHeight;
+    // 向上增长：top = anchorY - finalHeight，但不超出窗口顶部
+    const newTop = Math.max(0, bubbleAnchorY - finalHeight);
+    const visibleHeight = bubbleAnchorY - newTop;
 
+    bubble.style.left = bubbleSavedLeft + 'px';
     bubble.style.top = newTop + 'px';
-    bubble.style.height = finalHeight + 'px';
-    bubble.style.overflowY = finalHeight >= maxHeight ? 'auto' : 'hidden';
+    bubble.style.height = visibleHeight + 'px';
+    bubble.style.overflowY = finalHeight > bubbleAnchorY ? 'auto' : 'hidden';
   }, 50);
 
   // 显示/隐藏复制按钮
@@ -1083,6 +1250,9 @@ async function initializeApp() {
 
   // 初始化会话
   await initializeSession();
+
+  // 读取保存的输入框位置
+  await loadSavedInputPosition();
 
   // 启动时预热 STT，消除第一次按 F1 的延迟
   invoke('warm_stt').catch(() => {});

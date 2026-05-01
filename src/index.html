@@ -116,19 +116,33 @@
       display: block;
     }
 
-    /* ── 气泡：浮动，从底部向上增长 ── */
+    /* ── 气泡：相对于窗口固定定位，初始在窗口上方5px，向上增长 ── */
     #bubble {
       display: none;
-      position: absolute;
-      top: 175px;
+      position: fixed;
+      top: -5px;
       left: 5px;
-      right: 35px;
+      width: 260px;
       height: auto;
       padding: 12px 14px;
       background: rgba(20, 20, 20, 0.85);
       border-radius: 12px;
       overflow-x: hidden;
       z-index: 100;
+      cursor: grab;
+      user-select: none;
+    }
+    #bubble:active { cursor: grabbing; }
+
+    /* 小丽特殊样式 */
+    #bubble.bubble-xiaoli {
+      background: linear-gradient(135deg, rgba(100, 150, 200, 0.9), rgba(120, 100, 200, 0.9));
+      border-radius: 16px;
+    }
+
+    #bubble.bubble-xiaoli #bubble-text {
+      color: #fff;
+      font-weight: 500;
     }
 
     #bubble.showing {
