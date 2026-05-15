@@ -550,6 +550,9 @@ document.addEventListener('mouseup', (e) => {
     // 保存拖动后的位置：底部锚点 = top + 当前高度
     bubbleAnchorY = parseInt(bubble.style.top || 0) + bubble.offsetHeight;
     bubbleSavedLeft = parseInt(bubble.style.left || 5);
+    // 持久化到磁盘
+    invoke('save_bubble_position', { anchorY: bubbleAnchorY, left: bubbleSavedLeft })
+      .catch(err => console.warn('[bubble] 保存气泡位置失败:', err));
   }
   bubbleDragging = false;
 });
@@ -559,6 +562,20 @@ let inputDragging = false;
 let inputStartX, inputStartY, inputStartLeft = 0, inputStartTop = 0;
 let savedInputLeft = null;  // 当前内存中保存的位置
 let savedInputTop = null;
+
+// 应用启动时读取保存的气泡位置
+async function loadSavedBubblePosition() {
+  try {
+    const result = await invoke('load_bubble_position');
+    if (result && result[0] !== null && result[1] !== null) {
+      bubbleAnchorY = result[0];
+      bubbleSavedLeft = result[1];
+      console.log('[bubble] 已读取保存的位置: anchorY=', bubbleAnchorY, 'left=', bubbleSavedLeft);
+    }
+  } catch (err) {
+    console.warn('[bubble] 读取保存的位置失败:', err);
+  }
+}
 
 // 应用启动时读取保存的输入框位置
 async function loadSavedInputPosition() {
@@ -1253,6 +1270,9 @@ async function initializeApp() {
 
   // 读取保存的输入框位置
   await loadSavedInputPosition();
+
+  // 读取保存的气泡位置
+  await loadSavedBubblePosition();
 
   // 启动时预热 STT，消除第一次按 F1 的延迟
   invoke('warm_stt').catch(() => {});

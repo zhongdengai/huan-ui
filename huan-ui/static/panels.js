@@ -17,6 +17,7 @@ async function switchPanel(name) {
   if (name === 'profiles') await loadProfilesPanel();
   if (name === 'characters') await loadCharacters();
   if (name === 'todos') loadTodos();
+  if (name === 'llmConfig' && window.onLlmConfigPanelOpen) window.onLlmConfigPanelOpen();
 }
 
 // ── Cron panel ──

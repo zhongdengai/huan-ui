@@ -8,6 +8,11 @@ use base64::{Engine as _, engine::general_purpose};
 use std::io::{BufRead, BufReader, Write};
 use std::sync::Mutex;
 
+/// huan-ui 进程追踪
+struct HuanUiState {
+    pid: Mutex<Option<u32>>,
+}
+
 /// STT 常驻 Python 进程的状态
 struct SttServer {
     script_path: PathBuf,
@@ -100,6 +105,9 @@ impl SttServer {
 
 #[tauri::command]
 fn quit_app(app: tauri::AppHandle) {
+    stop_huan_ui();
+    // 稍等一下让进程有时间退出
+    std::thread::sleep(std::time::Duration::from_millis(500));
     app.exit(0);
 }
 
@@ -564,6 +572,51 @@ fn load_input_position() -> Result<Option<(f64, f64)>, String> {
     Ok(None)
 }
 
+/// 保存气泡位置
+#[tauri::command]
+fn save_bubble_position(anchor_y: f64, left: f64) -> Result<(), String> {
+    let config_dir = PathBuf::from(format!(
+        "{}/Documents/huanhuan/config",
+        std::env::var("HOME").unwrap_or_else(|_| ".".to_string())
+    ));
+
+    fs::create_dir_all(&config_dir)
+        .map_err(|e| format!("Failed to create config directory: {}", e))?;
+
+    let config_file = config_dir.join("bubblePosition.txt");
+    let content = format!("{},{}", anchor_y as i32, left as i32);
+
+    fs::write(&config_file, &content)
+        .map_err(|e| format!("Failed to save bubble position: {}", e))?;
+
+    Ok(())
+}
+
+/// 读取保存的气泡位置
+#[tauri::command]
+fn load_bubble_position() -> Result<Option<(f64, f64)>, String> {
+    let config_file = PathBuf::from(format!(
+        "{}/Documents/huanhuan/config/bubblePosition.txt",
+        std::env::var("HOME").unwrap_or_else(|_| ".".to_string())
+    ));
+
+    if !config_file.exists() {
+        return Ok(None);
+    }
+
+    let content = fs::read_to_string(&config_file)
+        .map_err(|e| format!("Failed to read bubble position file: {}", e))?;
+
+    let parts: Vec<&str> = content.trim().split(',').collect();
+    if parts.len() == 2 {
+        if let (Ok(anchor_y), Ok(left)) = (parts[0].parse::<f64>(), parts[1].parse::<f64>()) {
+            return Ok(Some((anchor_y, left)));
+        }
+    }
+
+    Ok(None)
+}
+
 /// TTS：调用 Mac 原生 say 命令朗读文字（使用系统默认语音）
 #[tauri::command]
 fn speak_text(text: String) -> Result<(), String> {
@@ -705,7 +758,7 @@ fn is_port_in_use(port: u16) -> bool {
 }
 
 /// 启动 huan-ui 服务 (Python webui on port 8868)
-fn start_huan_ui() {
+fn start_huan_ui(app: tauri::AppHandle) {
     // 检查 8868 端口是否已被占用（可能已有一个 huan-ui 实例运行）
     if is_port_in_use(8868) {
         eprintln!("[huan-ui] Port 8868 is already in use, skipping startup");
@@ -721,17 +774,21 @@ fn start_huan_ui() {
         return;
     }
 
-    // 在后台启动 huan-ui 脚本
+    // 在后台启动 huan-ui 脚本（用 bash 直接执行，不需要 login shell）
+    let app_clone = app.clone();
     std::thread::spawn(move || {
-        match Command::new("/bin/zsh")
-            .arg("-l")   // login shell，加载 .zshrc/.zprofile，继承 PATH 和 venv
-            .arg("-c")
-            .arg(format!("bash {}", start_script.display()))
+        match Command::new("/bin/bash")
+            .arg(&start_script)
+            .current_dir(&huan_ui_dir)
             .spawn()
         {
             Ok(mut child) => {
-                eprintln!("[huan-ui] Started huan-ui service (PID: {:?})", child.id());
-                // 等待进程，以便捕获错误
+                let pid = child.id();
+                eprintln!("[huan-ui] Started huan-ui service (PID: {})", pid);
+                // 保存 PID 到 managed state，供退出时清理
+                if let Some(state) = app_clone.try_state::<HuanUiState>() {
+                    *state.pid.lock().unwrap() = Some(pid);
+                }
                 match child.wait() {
                     Ok(status) => {
                         if !status.success() {
@@ -740,10 +797,42 @@ fn start_huan_ui() {
                     }
                     Err(e) => eprintln!("[huan-ui] Error waiting for process: {}", e),
                 }
+                // 进程退出后清空 PID
+                if let Some(state) = app_clone.try_state::<HuanUiState>() {
+                    *state.pid.lock().unwrap() = None;
+                }
             }
             Err(e) => eprintln!("[huan-ui] Failed to start huan-ui: {}", e),
         }
     });
+
+    // 后台健康检测线程：轮询 8868 端口，最多等 15 秒
+    std::thread::spawn(move || {
+        let max_ms: u64 = 15_000;
+        let interval = std::time::Duration::from_millis(500);
+        let mut elapsed: u64 = 0;
+        while elapsed < max_ms {
+            std::thread::sleep(interval);
+            elapsed += 500;
+            if is_port_in_use(8868) {
+                eprintln!("[huan-ui] ✓ Ready after ~{}ms", elapsed);
+                return;
+            }
+            eprintln!("[huan-ui] Waiting for huan-ui... ({}ms)", elapsed);
+        }
+        eprintln!("[huan-ui] ⚠ Timeout: huan-ui not ready after {}ms", max_ms);
+    });
+}
+
+/// 关闭 huan-ui 服务（通过 lsof 找到端口进程并发送 TERM 信号）
+fn stop_huan_ui() {
+    eprintln!("[huan-ui] Stopping huan-ui on port 8868...");
+    // 用 lsof 找到监听 8868 的进程 PID，发送 TERM 信号
+    let _ = Command::new("sh")
+        .arg("-c")
+        .arg("lsof -ti:8868 2>/dev/null | xargs kill -TERM 2>/dev/null; true")
+        .output();
+    eprintln!("[huan-ui] TERM signal sent");
 }
 
 
@@ -764,6 +853,8 @@ pub fn run() {
             load_current_session_id,
             save_input_position,
             load_input_position,
+            save_bubble_position,
+            load_bubble_position,
             speak_text,
             stop_speaking,
             warm_stt,
@@ -776,8 +867,11 @@ pub fn run() {
                 .unwrap_or_else(|| PathBuf::from("stt_server.py"));
             app.manage(Mutex::new(SttServer::new(stt_script)));
 
+            // 注册 huan-ui 进程状态（用于退出时清理）
+            app.manage(HuanUiState { pid: Mutex::new(None) });
+
             // 启动 huan-ui 服务
-            start_huan_ui();
+            start_huan_ui(app.handle().clone());
 
             let window = app.get_webview_window("main").unwrap();
 

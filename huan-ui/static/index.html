@@ -24,6 +24,7 @@
       <button class="nav-tab" data-panel="profiles" data-label="Profiles" onclick="switchPanel('profiles')" title="Agent profiles" data-i18n-title="tab_profiles"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg></button>
       <button class="nav-tab" data-panel="characters" data-label="Characters" onclick="switchPanel('characters')" title="Manage characters" data-i18n-title="tab_characters">🎭</button>
       <button class="nav-tab" data-panel="todos" data-label="Todos" onclick="switchPanel('todos')" title="Current task list" data-i18n-title="tab_todos">&#9989;</button>
+      <button class="nav-tab" data-panel="llmConfig" data-label="AI配置" onclick="switchPanel('llmConfig')" title="AI 配置">🤖</button>
     </div>
     <!-- Chat panel -->
     <div class="panel-view active" id="panelChat">
@@ -137,6 +138,63 @@
       <div style="padding:10px 12px 4px;font-size:11px;color:var(--muted)">Manage AI characters</div>
       <div id="charactersPanel" style="flex:1;overflow-y:auto;padding:0 12px 12px"><div style="padding:12px;color:var(--muted);font-size:12px" data-i18n="loading">Loading...</div></div>
     </div>
+
+    <!-- AI 配置 panel -->
+    <div class="panel-view" id="panelLlmConfig" style="flex-direction:column;overflow-y:auto">
+      <div style="padding:10px 12px 4px;font-size:11px;color:var(--muted);flex-shrink:0;font-weight:600;letter-spacing:.05em">🤖 AI 配置</div>
+
+      <!-- 当前配置状态条 -->
+      <div id="llmCurrentStatus" style="margin:0 12px 8px;padding:6px 10px;background:rgba(255,255,255,.06);border-radius:8px;font-size:11px;color:var(--muted);flex-shrink:0">
+        加载中...
+      </div>
+
+      <!-- Provider 卡片网格 -->
+      <div style="padding:0 12px 8px;flex-shrink:0">
+        <div style="font-size:10px;color:var(--muted);letter-spacing:.06em;margin-bottom:6px">选择 LLM 提供商</div>
+        <div id="llmProviderGrid" style="display:grid;grid-template-columns:1fr 1fr;gap:6px">
+          <!-- cards injected by JS -->
+        </div>
+      </div>
+
+      <!-- 配置表单（选中某个 provider 后展开） -->
+      <div id="llmConfigForm" style="display:none;padding:0 12px 12px;flex-shrink:0">
+        <div style="font-size:10px;color:var(--muted);letter-spacing:.06em;margin-bottom:8px;margin-top:4px">
+          填写 <span id="llmFormProviderName" style="color:var(--text);font-weight:600"></span> 配置
+        </div>
+
+        <!-- API Key (条件显示) -->
+        <div id="llmKeyRow" style="margin-bottom:8px">
+          <div style="font-size:10px;color:var(--muted);margin-bottom:3px">API Key</div>
+          <input id="llmApiKey" type="password" placeholder="" autocomplete="off"
+            style="width:100%;background:rgba(255,255,255,.05);border:1px solid var(--border2);border-radius:6px;color:var(--text);padding:5px 8px;font-size:12px;outline:none;box-sizing:border-box">
+          <div id="llmKeyMasked" style="font-size:10px;color:var(--muted);margin-top:2px;display:none"></div>
+        </div>
+
+        <!-- Base URL -->
+        <div style="margin-bottom:8px">
+          <div style="font-size:10px;color:var(--muted);margin-bottom:3px">Base URL <span style="opacity:.6">（可选，留空用默认）</span></div>
+          <input id="llmBaseUrl" type="text" placeholder=""
+            style="width:100%;background:rgba(255,255,255,.05);border:1px solid var(--border2);border-radius:6px;color:var(--text);padding:5px 8px;font-size:12px;outline:none;box-sizing:border-box">
+        </div>
+
+        <!-- Model ID -->
+        <div style="margin-bottom:10px">
+          <div style="font-size:10px;color:var(--muted);margin-bottom:3px">Model ID <span style="opacity:.6">（可选，留空用默认）</span></div>
+          <input id="llmModelId" type="text" placeholder=""
+            style="width:100%;background:rgba(255,255,255,.05);border:1px solid var(--border2);border-radius:6px;color:var(--text);padding:5px 8px;font-size:12px;outline:none;box-sizing:border-box">
+        </div>
+
+        <!-- 按钮行 -->
+        <div style="display:flex;gap:6px;margin-bottom:8px">
+          <button class="cron-btn" style="flex:1;font-size:11px" onclick="llmTestConnection()">🔗 测试连接</button>
+          <button class="cron-btn run" style="flex:1;font-size:11px" onclick="llmSaveConfig()">💾 保存</button>
+        </div>
+
+        <!-- 状态提示 -->
+        <div id="llmFormStatus" style="font-size:11px;padding:6px 8px;border-radius:6px;display:none"></div>
+      </div>
+    </div>
+
     <div class="sidebar-bottom">
       <div class="field-label" style="font-size:10px;letter-spacing:.07em;margin-bottom:4px">MODEL</div>
       <select id="modelSelect">
@@ -457,6 +515,7 @@
 <script src="/static/commands.js"></script>
 <script src="/static/messages.js"></script>
 <script src="/static/panels.js"></script>
+<script src="/static/llm-config.js"></script>
 <script src="/static/boot.js"></script>
 </body>
 </html>

@@ -433,6 +433,18 @@ def handle_get(handler, parsed) -> bool:
         from api.profiles import get_active_profile_name, get_active_hermes_home
         return j(handler, {'name': get_active_profile_name(), 'path': str(get_active_hermes_home())})
 
+    # ── LLM config (AI 配置) ───────────────────────────────────────────────────
+    if parsed.path == '/api/llm-config':
+        from api.llm_config import load_llm_config, PROVIDERS
+        cfg = load_llm_config()
+        # Mask API key for display
+        display_cfg = dict(cfg)
+        key = display_cfg.get('api_key', '')
+        if key:
+            display_cfg['api_key_masked'] = key[:6] + '****' if len(key) > 6 else '****'
+            display_cfg['api_key'] = ''  # never send full key to browser
+        return j(handler, {'llm': display_cfg, 'providers': PROVIDERS})
+
     return False  # 404
 
 
@@ -570,6 +582,13 @@ def handle_post(handler, parsed) -> bool:
 
     if parsed.path == '/api/chat/start':
         return _handle_chat_start(handler, body)
+
+    # ── LLM config POST routes ─────────────────────────────────────────────────
+    if parsed.path == '/api/llm-config/save':
+        return _handle_llm_config_save(handler, body)
+
+    if parsed.path == '/api/llm-config/test':
+        return _handle_llm_config_test(handler, body)
 
     if parsed.path == '/api/chat':
         return _handle_chat_sync(handler, body)
@@ -1148,8 +1167,41 @@ def _handle_chat_start(handler, body):
     return j(handler, {'stream_id': stream_id, 'session_id': s.session_id})
 
 
+def _handle_llm_config_save(handler, body):
+    """POST /api/llm-config/save — Save LLM provider configuration."""
+    from api.llm_config import save_llm_config, load_llm_config
+    llm_cfg = dict(body.get('llm', body))  # accept either {llm:{...}} or flat {...}
+    if not llm_cfg.get('provider'):
+        return bad(handler, 'provider is required')
+    # If key is empty and keep_existing_key is set, preserve the stored key
+    keep_key = llm_cfg.pop('_keep_existing_key', False)
+    if keep_key and not llm_cfg.get('api_key', '').strip():
+        existing = load_llm_config()
+        llm_cfg['api_key'] = existing.get('api_key', '')
+    save_llm_config(llm_cfg)
+    return j(handler, {'ok': True})
+
+
+def _handle_llm_config_test(handler, body):
+    """POST /api/llm-config/test — Test LLM connection."""
+    from api.llm_config import test_connection, load_llm_config
+    llm_cfg = dict(body.get('llm', body))
+    keep_key = llm_cfg.pop('_keep_existing_key', False)
+    if keep_key and not llm_cfg.get('api_key', '').strip():
+        existing = load_llm_config()
+        llm_cfg['api_key'] = existing.get('api_key', '')
+    result = test_connection(llm_cfg)
+    return j(handler, result)
+
+
 def _handle_chat_sync(handler, body):
     """Fallback synchronous chat endpoint (POST /api/chat). Used by desktop app."""
+    from api.llm_config import is_configured, load_llm_config, chat_with_config
+
+    # ── 优先使用用户配置的 LLM (user/config.json) ────────────────────────────
+    if is_configured():
+        return _handle_chat_direct(handler, body)
+
     from api.config import _get_session_agent_lock
     session_id = body.get('session_id', '')
     if not session_id:
@@ -1241,6 +1293,57 @@ def _handle_chat_sync(handler, body):
         'status': 'done' if result.get('completed', True) else 'partial',
         'session': s.compact() | {'messages': s.messages},
         'result': {k: v for k, v in result.items() if k != 'messages'},
+    })
+
+
+def _handle_chat_direct(handler, body):
+    """Direct LLM chat using user/config.json — bypasses Hermes agent."""
+    from api.llm_config import load_llm_config, chat_with_config
+
+    session_id = body.get('session_id', '')
+    if not session_id:
+        return bad(handler, 'session_id is required')
+    try:
+        s = get_session(session_id)
+    except KeyError:
+        return bad(handler, f'Session not found: {session_id}', 404)
+
+    msg = str(body.get('message', '')).strip()
+    if not msg:
+        return j(handler, {'error': 'empty message'}, status=400)
+
+    # 读取当前角色的 system_prompt
+    system_prompt = ''
+    try:
+        active_char = _load_active_character()
+        if active_char:
+            char_cfg = _load_character_config(active_char)
+            system_prompt = (char_cfg or {}).get('system_prompt', '')
+    except Exception as e:
+        print(f'[direct_chat] Could not load character system_prompt: {e}', flush=True)
+
+    cfg = load_llm_config()
+    try:
+        reply = chat_with_config(
+            message=msg,
+            history=s.messages,
+            system_prompt=system_prompt,
+            cfg=cfg,
+        )
+    except Exception as e:
+        print(f'[direct_chat] LLM call failed: {e}', flush=True)
+        return j(handler, {'error': f'LLM error: {e}'}, status=500)
+
+    # 保存消息到 session
+    s.messages.append({'role': 'user', 'content': msg})
+    s.messages.append({'role': 'assistant', 'content': reply})
+    s.title = title_from(s.messages, s.title)
+    s.save()
+
+    return j(handler, {
+        'answer': reply,
+        'status': 'done',
+        'session': s.compact(),
     })
 
 
