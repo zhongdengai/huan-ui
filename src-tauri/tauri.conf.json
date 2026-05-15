@@ -33,6 +33,9 @@
       "icons/icon.png",
       "icons/icon.icns"
     ],
+    "resources": {
+      "scripts/stt_server.py": "scripts/stt_server.py"
+    },
     "macOS": {
       "infoPlist": "Info.plist",
       "entitlements": "entitlements.plist"
