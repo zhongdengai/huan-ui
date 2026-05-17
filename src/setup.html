@@ -1,0 +1,444 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>欢欢 · 初始设置</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    button { -webkit-appearance: none; appearance: none; }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, sans-serif;
+      background: #1a1a2e;
+      color: #e0e0e0;
+      height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      padding: 32px;
+    }
+
+    .wizard {
+      width: 100%;
+      max-width: 420px;
+    }
+
+    /* 步骤指示器 */
+    .steps {
+      display: flex;
+      justify-content: center;
+      gap: 8px;
+      margin-bottom: 32px;
+    }
+    .step-dot {
+      width: 8px; height: 8px;
+      border-radius: 50%;
+      background: rgba(255,255,255,0.2);
+      transition: background 0.3s;
+    }
+    .step-dot.active { background: #7c6af0; }
+    .step-dot.done   { background: rgba(124,106,240,0.5); }
+
+    /* 步骤内容卡片 */
+    .step { display: none; }
+    .step.visible { display: block; }
+
+    h2 {
+      font-size: 22px;
+      font-weight: 600;
+      margin-bottom: 8px;
+      color: #fff;
+    }
+    .subtitle {
+      font-size: 14px;
+      color: rgba(255,255,255,0.5);
+      margin-bottom: 28px;
+      line-height: 1.6;
+    }
+
+    /* 状态行 */
+    .status-row {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 14px 16px;
+      background: rgba(255,255,255,0.06);
+      border-radius: 10px;
+      margin-bottom: 12px;
+    }
+    .status-icon { font-size: 20px; }
+    .status-text { font-size: 14px; color: #e0e0e0; }
+    .status-row.ok  { border: 1px solid rgba(80,200,120,0.3); }
+    .status-row.err { border: 1px solid rgba(255,90,90,0.3); }
+
+    /* 提供商选择 */
+    .provider-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 10px;
+      margin-bottom: 16px;
+    }
+    .provider-card {
+      padding: 14px;
+      background: rgba(255,255,255,0.06);
+      border: 1px solid rgba(255,255,255,0.1);
+      border-radius: 10px;
+      cursor: pointer;
+      text-align: center;
+      transition: all 0.2s;
+    }
+    .provider-card:hover  { background: rgba(124,106,240,0.15); border-color: rgba(124,106,240,0.4); }
+    .provider-card.selected { background: rgba(124,106,240,0.25); border-color: #7c6af0; }
+    .provider-name { font-size: 14px; font-weight: 500; color: #fff; margin-top: 4px; }
+    .provider-desc { font-size: 11px; color: rgba(255,255,255,0.4); margin-top: 2px; }
+
+    /* 自定义输入区域 */
+    .custom-fields { margin-bottom: 12px; }
+    label { font-size: 12px; color: rgba(255,255,255,0.5); display: block; margin-bottom: 6px; }
+    input[type="text"], input[type="password"] {
+      width: 100%;
+      padding: 10px 14px;
+      background: rgba(255,255,255,0.08);
+      border: 1px solid rgba(255,255,255,0.15);
+      border-radius: 8px;
+      color: #fff;
+      font-size: 14px;
+      font-family: inherit;
+      outline: none;
+      margin-bottom: 12px;
+      -webkit-appearance: none;
+    }
+    input:focus { border-color: #7c6af0; }
+    input::placeholder { color: rgba(255,255,255,0.25); }
+
+    /* 测试结果 */
+    #test-result {
+      font-size: 13px;
+      padding: 10px 14px;
+      border-radius: 8px;
+      margin-bottom: 14px;
+      display: none;
+    }
+    #test-result.ok  { background: rgba(80,200,120,0.15); color: #50c878; display: block; }
+    #test-result.err { background: rgba(255,90,90,0.15);  color: #ff5a5a; display: block; }
+
+    /* 按钮 */
+    .btn-row {
+      display: flex;
+      gap: 10px;
+      justify-content: flex-end;
+      margin-top: 8px;
+    }
+    .btn {
+      padding: 10px 22px;
+      border-radius: 8px;
+      border: none;
+      font-size: 14px;
+      font-weight: 500;
+      cursor: pointer;
+      font-family: inherit;
+      transition: opacity 0.2s;
+    }
+    .btn:disabled { opacity: 0.4; cursor: default; }
+    /* WKWebView 坑：disabled 属性用 JS 移除后内部状态不恢复，改用 CSS class 控制 */
+    .btn.btn-inactive { opacity: 0.4 !important; cursor: default !important; pointer-events: none !important; }
+    .btn-secondary { background: rgba(255,255,255,0.1); color: #fff; }
+    .btn-secondary:hover:not(:disabled) { background: rgba(255,255,255,0.18); }
+    .btn-primary { background: #7c6af0; color: #fff; }
+    .btn-primary:hover:not(.btn-inactive) { background: #6a58d8; }
+    .btn-link {
+      background: transparent; border: none;
+      color: #7c6af0; font-size: 13px; cursor: pointer;
+      text-decoration: underline; padding: 0; font-family: inherit;
+    }
+
+    /* 完成页 */
+    .done-icon { font-size: 56px; text-align: center; margin-bottom: 16px; }
+  </style>
+</head>
+<body>
+<div class="wizard">
+  <!-- 步骤点 -->
+  <div class="steps">
+    <div class="step-dot active" id="dot-0"></div>
+    <div class="step-dot" id="dot-1"></div>
+    <div class="step-dot" id="dot-2"></div>
+    <div class="step-dot" id="dot-3"></div>
+  </div>
+
+  <!-- Step 0: 欢迎 + 检测 Hermes -->
+  <div class="step visible" id="step-0">
+    <h2>👋 欢迎使用欢欢</h2>
+    <p class="subtitle">在开始之前，我们来确认一下运行环境是否准备好了。</p>
+
+    <div class="status-row" id="hermes-status">
+      <span class="status-icon">⏳</span>
+      <span class="status-text">正在检测 Hermes…</span>
+    </div>
+
+    <div class="btn-row">
+      <a id="hermes-download-btn" href="#" style="display:none; color:#7c6af0; font-size:13px; text-decoration:underline;"
+        onclick="openHermesDownload(); return false;">去下载 Hermes →</a>
+      <button class="btn btn-primary btn-inactive" id="step0-next">下一步</button>
+    </div>
+  </div>
+
+  <!-- Step 1: 选择 AI 提供商 -->
+  <div class="step" id="step-1">
+    <h2>🤖 选择 AI 提供商</h2>
+    <p class="subtitle">选择你想接入的 AI 服务，填入对应的 API Key 即可开始使用。</p>
+
+    <div class="provider-grid" id="provider-grid"></div>
+
+    <div class="btn-row">
+      <button class="btn btn-secondary" onclick="goStep(0)">上一步</button>
+      <button class="btn btn-primary btn-inactive" id="step1-next">下一步</button>
+    </div>
+  </div>
+
+  <!-- Step 2: 填写 API Key + 测试 -->
+  <div class="step" id="step-2">
+    <h2>🔑 填写配置</h2>
+    <p class="subtitle" id="step2-subtitle"></p>
+
+    <div id="custom-fields" class="custom-fields" style="display:none">
+      <label>Base URL</label>
+      <input type="text" id="custom-url" placeholder="https://api.example.com/v1" />
+      <label>模型名称</label>
+      <input type="text" id="custom-model" placeholder="gpt-4o-mini" />
+    </div>
+
+    <div id="key-field" class="custom-fields">
+      <label id="key-label">API Key</label>
+      <input type="password" id="api-key" placeholder="" />
+    </div>
+
+    <div id="test-result"></div>
+
+    <div class="btn-row">
+      <button class="btn btn-secondary" onclick="goStep(1)">上一步</button>
+      <button class="btn btn-secondary" id="test-btn" onclick="testConnection()">测试连接</button>
+      <button class="btn btn-primary" id="step2-next" onclick="saveAndNext()">保存并继续</button>
+    </div>
+  </div>
+
+  <!-- Step 3: 完成 -->
+  <div class="step" id="step-3">
+    <div class="done-icon">🎉</div>
+    <h2 style="text-align:center">配置完成！</h2>
+    <p class="subtitle" style="text-align:center;margin-top:8px">
+      欢欢已准备好陪伴你了。<br>以后可以在设置里随时更改 AI 配置。
+    </p>
+    <div class="btn-row" style="justify-content:center;margin-top:24px">
+      <button class="btn btn-primary" onclick="finishSetup()">开始使用</button>
+    </div>
+  </div>
+</div>
+
+<script>
+// 安全获取 invoke：延迟访问，避免顶层崩溃
+function safeInvoke(cmd, args) {
+  try {
+    const fn = window.__TAURI__?.core?.invoke;
+    if (!fn) return Promise.reject(new Error('Tauri API 未就绪'));
+    return args ? fn(cmd, args) : fn(cmd);
+  } catch(e) {
+    return Promise.reject(e);
+  }
+}
+
+const PROVIDERS = [
+  { id: 'minimax',  name: 'MiniMax',       desc: '国内直连',        needsKey: true,  keyHint: 'eyJ...',        url: 'https://api.minimax.io/v1',                          model: 'MiniMax-Text-01' },
+  { id: 'deepseek', name: 'DeepSeek',      desc: '深度求索',        needsKey: true,  keyHint: 'sk-...',        url: 'https://api.deepseek.com/v1',                        model: 'deepseek-chat' },
+  { id: 'openai',   name: 'OpenAI',        desc: 'GPT 系列',        needsKey: true,  keyHint: 'sk-...',        url: 'https://api.openai.com/v1',                          model: 'gpt-4o-mini' },
+  { id: 'claude',   name: 'Claude',        desc: 'Anthropic',       needsKey: true,  keyHint: 'sk-ant-...',    url: 'https://api.anthropic.com',                          model: 'claude-haiku-3-5' },
+  { id: 'qwen',     name: '通义千问',       desc: '阿里云',          needsKey: true,  keyHint: 'sk-...',        url: 'https://dashscope.aliyuncs.com/compatible-mode/v1',  model: 'qwen-plus' },
+  { id: 'gemini',   name: 'Gemini',        desc: 'Google',          needsKey: true,  keyHint: 'AIza...',       url: 'https://generativelanguage.googleapis.com/v1beta',   model: 'gemini-1.5-flash' },
+  { id: 'ollama',   name: 'Ollama',        desc: '本地运行',        needsKey: false, keyHint: '',              url: 'http://localhost:11434/v1',                          model: 'llama3' },
+  { id: 'custom',   name: '自定义',         desc: '任意 OpenAI 兼容', needsKey: false, keyHint: 'sk-...',       url: '',                                                   model: '' },
+];
+
+let selectedProvider = null;
+let connectionTested = false;
+let existingConfig = null;  // 已有的 LLM 配置
+
+// ── 初始化 ──────────────────────────────────────────────────────────────────
+window.addEventListener('DOMContentLoaded', async () => {
+  // 用 addEventListener 绑定，不用 onclick 属性（WKWebView 兼容性更好）
+  document.getElementById('step0-next').addEventListener('click', () => goStep(1));
+  document.getElementById('step1-next').addEventListener('click', () => goStep(2));
+  buildProviderGrid();
+  await loadExistingConfig();
+  await detectHermes();
+});
+
+async function loadExistingConfig() {
+  try {
+    const resp = await fetch('http://127.0.0.1:8868/api/llm-config');
+    const data = await resp.json();
+    if (data.llm && data.llm.provider) {
+      existingConfig = data.llm;
+      // 预选已有的提供商
+      selectProvider(data.llm.provider);
+    }
+  } catch(e) {
+    // huan-ui 还没就绪或无配置，忽略
+  }
+}
+
+async function detectHermes() {
+  const row = document.getElementById('hermes-status');
+  const nextBtn = document.getElementById('step0-next');
+  const dlBtn = document.getElementById('hermes-download-btn');
+  try {
+    const ok = await safeInvoke('check_hermes_installed');
+    if (ok) {
+      row.className = 'status-row ok';
+      row.innerHTML = '<span class="status-icon">✅</span><span class="status-text">Hermes 已安装，准备就绪</span>';
+      nextBtn.classList.remove('btn-inactive');
+    } else {
+      row.className = 'status-row err';
+      row.innerHTML = '<span class="status-icon">❌</span><span class="status-text">未检测到 Hermes，请先安装</span>';
+      dlBtn.style.display = 'inline';
+      nextBtn.classList.remove('btn-inactive');
+    }
+  } catch(e) {
+    row.className = 'status-row';
+    row.innerHTML = '<span class="status-icon">⚠️</span><span class="status-text">检测跳过，请手动确认 Hermes 已安装</span>';
+    nextBtn.classList.remove('btn-inactive');
+  }
+}
+
+function openHermesDownload() {
+  safeInvoke('open_url', { url: 'https://github.com/xixiangwork/hermes' });
+}
+
+function buildProviderGrid() {
+  const grid = document.getElementById('provider-grid');
+  PROVIDERS.forEach(p => {
+    const card = document.createElement('div');
+    card.className = 'provider-card';
+    card.dataset.id = p.id;
+    card.innerHTML = `<div class="provider-name">${p.name}</div><div class="provider-desc">${p.desc}</div>`;
+    card.onclick = () => selectProvider(p.id);
+    grid.appendChild(card);
+  });
+}
+
+function selectProvider(id) {
+  selectedProvider = PROVIDERS.find(p => p.id === id);
+  document.querySelectorAll('.provider-card').forEach(c => {
+    c.classList.toggle('selected', c.dataset.id === id);
+  });
+  document.getElementById('step1-next').classList.remove('btn-inactive');
+}
+
+// ── 步骤跳转 ────────────────────────────────────────────────────────────────
+function goStep(n) {
+  document.querySelectorAll('.step').forEach((s, i) => {
+    s.classList.toggle('visible', i === n);
+  });
+  document.querySelectorAll('.step-dot').forEach((d, i) => {
+    d.className = 'step-dot' + (i < n ? ' done' : i === n ? ' active' : '');
+  });
+  if (n === 2) populateStep2();
+}
+
+function populateStep2() {
+  const p = selectedProvider;
+  document.getElementById('step2-subtitle').textContent =
+    p.id === 'ollama' ? '本地 Ollama 无需 API Key，直接测试连接即可。' :
+    p.id === 'custom' ? '填写你的自定义服务地址、模型名和 Key。' :
+    `填入你的 ${p.name} API Key。`;
+
+  const customFields = document.getElementById('custom-fields');
+  const keyField = document.getElementById('key-field');
+
+  if (p.id === 'custom') {
+    customFields.style.display = 'block';
+    document.getElementById('custom-url').value = p.url;
+    document.getElementById('custom-model').value = p.model;
+  } else {
+    customFields.style.display = 'none';
+  }
+
+  keyField.style.display = (p.needsKey || p.id === 'custom') ? 'block' : 'none';
+  document.getElementById('key-label').textContent = 'API Key';
+  const keyInput = document.getElementById('api-key');
+  keyInput.placeholder = p.keyHint || '（留空）';
+  // 预填已有配置的 key（如果是同一个提供商）
+  if (existingConfig && existingConfig.provider === p.id && existingConfig.api_key) {
+    keyInput.value = existingConfig.api_key;
+  } else {
+    keyInput.value = '';
+  }
+
+  document.getElementById('test-result').className = '';
+  document.getElementById('test-result').textContent = '';
+  connectionTested = false;
+}
+
+// ── 测试连接 ────────────────────────────────────────────────────────────────
+async function testConnection() {
+  const btn = document.getElementById('test-btn');
+  const result = document.getElementById('test-result');
+  btn.disabled = true;
+  btn.textContent = '测试中…';
+  result.className = '';
+
+  const cfg = buildConfig();
+
+  try {
+    const resp = await fetch('http://127.0.0.1:8868/api/llm-config/test', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ llm: cfg })
+    });
+    const data = await resp.json();
+    if (data.ok) {
+      result.className = 'ok';
+      result.textContent = '✅ 连接成功：' + (data.message || '服务正常');
+      connectionTested = true;
+    } else {
+      result.className = 'err';
+      result.textContent = '❌ ' + (data.error || '连接失败');
+    }
+  } catch(e) {
+    result.className = 'err';
+    result.textContent = '❌ 请求失败，请确认 huan-ui 正在运行：' + e;
+  }
+
+  btn.disabled = false;
+  btn.textContent = '测试连接';
+}
+
+function buildConfig() {
+  const p = selectedProvider;
+  const key = document.getElementById('api-key').value.trim();
+  const url = p.id === 'custom' ? document.getElementById('custom-url').value.trim() : p.url;
+  const model = p.id === 'custom' ? document.getElementById('custom-model').value.trim() : p.model;
+  return { provider: p.id, api_key: key, base_url: url, model };
+}
+
+async function saveAndNext() {
+  const cfg = buildConfig();
+  try {
+    await fetch('http://127.0.0.1:8868/api/llm-config/save', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ llm: cfg })
+    });
+    goStep(3);
+  } catch(e) {
+    alert('保存失败：' + e);
+  }
+}
+
+async function finishSetup() {
+  await safeInvoke('finish_setup');
+}
+</script>
+</body>
+</html>

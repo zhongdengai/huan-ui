@@ -78,9 +78,12 @@ huan-ui/user/characters/*/frames_backup_black/
 huan-ui/user/characters/*/frames.zip
 
 # All non-default frames (only keep frame-0001.png as static default)
-huan-ui/user/characters/*/frames/frame-0002.png
-huan-ui/user/characters/*/frames/frame-00[0-9][2-9].png
-huan-ui/user/characters/*/frames/frame-0[1-9][0-9][0-9].png
+huan-ui/user/characters/*/frames/*.png
+!huan-ui/user/characters/*/frames/frame-0001.png
+huan-ui/user/characters/*.zip
+huan-ui/user/characters/**/*.mp4
+huan-ui/user/characters/**/*.avi
+huan-ui/user/characters/**/*.mov
 
 # webui runtime state
 huan-ui/webui/settings.json
@@ -91,7 +94,12 @@ huan-ui/webui/last_workspace.txt
 huan-ui/webui/current_character.txt
 
 # App config runtime state
-config/currentSession.txt
+config/
+
+# Hermes runtime files
+huan-ui/user/characters/*/.clean_shutdown
+huan-ui/user/characters/*/.hermes_history
+huan-ui/user/characters/*/.update_check
 
 # Claude Code project settings (machine-specific)
 .claude/launch.json
