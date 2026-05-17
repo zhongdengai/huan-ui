@@ -12,7 +12,13 @@ import urllib.error
 from pathlib import Path
 
 # ── Config file location ──────────────────────────────────────────────────────
-_USER_CONFIG_PATH = Path(__file__).parent.parent / 'user' / 'config.json'
+# 优先使用 HERMES_WEBUI_USER_DIR（app bundle 模式），否则回退到仓库内路径（开发模式）
+import os as _os
+_user_dir_override = _os.environ.get('HERMES_WEBUI_USER_DIR', '')
+if _user_dir_override:
+    _USER_CONFIG_PATH = Path(_user_dir_override) / 'config.json'
+else:
+    _USER_CONFIG_PATH = Path(__file__).parent.parent / 'user' / 'config.json'
 
 # ── Provider definitions ──────────────────────────────────────────────────────
 PROVIDERS = {

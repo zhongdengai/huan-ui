@@ -8,8 +8,99 @@ use base64::{Engine as _, engine::general_purpose};
 use std::io::{BufRead, BufReader, Write};
 use std::sync::Mutex;
 
+/// 返回 app 统一数据目录：~/Library/Application Support/huanhuan/
+/// 所有配置、会话、缓存均存在这里，不再散落到 ~/Documents/
+fn app_data_dir() -> PathBuf {
+    let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
+    PathBuf::from(format!("{}/Library/Application Support/huanhuan", home))
+}
+
+/// 确保子目录存在，返回完整路径
+fn app_data_subdir(sub: &str) -> PathBuf {
+    let dir = app_data_dir().join(sub);
+    let _ = fs::create_dir_all(&dir);
+    dir
+}
+
+/// 首次启动时将旧的 ~/Documents/huanhuan/{config,sessions} 迁移到新路径
+fn migrate_legacy_data() {
+    let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
+    let old_base = PathBuf::from(format!("{}/Documents/huanhuan", home));
+    if !old_base.exists() { return; }
+
+    for sub in &["config", "sessions"] {
+        let old_dir = old_base.join(sub);
+        let new_dir = app_data_subdir(sub);
+        if !old_dir.exists() { continue; }
+        if let Ok(entries) = fs::read_dir(&old_dir) {
+            for entry in entries.flatten() {
+                let dst = new_dir.join(entry.file_name());
+                if !dst.exists() {
+                    let _ = fs::copy(entry.path(), &dst);
+                    eprintln!("[migrate] {:?} -> {:?}", entry.path(), dst);
+                }
+            }
+        }
+        // 迁移完后删除旧目录（仅当空时）
+        let _ = fs::remove_dir(&old_dir);
+    }
+}
+
+/// 首次启动时从 app bundle 初始化默认角色到用户数据目录
+/// 只在用户角色目录为空时执行，不覆盖已有数据
+fn init_default_characters(app: &tauri::AppHandle) {
+    let user_chars_dir = app_data_subdir("user/characters");
+
+    // 已有角色就跳过
+    if let Ok(mut entries) = fs::read_dir(&user_chars_dir) {
+        if entries.next().is_some() {
+            return;
+        }
+    }
+
+    let resource_dir = match app.path().resource_dir() {
+        Ok(d) => d,
+        Err(e) => { eprintln!("[init] resource_dir error: {}", e); return; }
+    };
+    let defaults_src = resource_dir.join("default-characters");
+    if !defaults_src.exists() {
+        eprintln!("[init] default-characters not found in bundle");
+        return;
+    }
+
+    for char_id in &["huanhuan", "wally", "xuebao", "test"] {
+        let src = defaults_src.join(char_id);
+        let dst = user_chars_dir.join(char_id);
+        if let Err(e) = copy_dir_recursive(&src, &dst) {
+            eprintln!("[init] failed to copy {}: {}", char_id, e);
+        } else {
+            eprintln!("[init] initialized character: {}", char_id);
+        }
+    }
+}
+
+/// 递归复制目录
+fn copy_dir_recursive(src: &PathBuf, dst: &PathBuf) -> Result<(), String> {
+    fs::create_dir_all(dst).map_err(|e| e.to_string())?;
+    for entry in fs::read_dir(src).map_err(|e| e.to_string())?.flatten() {
+        let src_path = entry.path();
+        let dst_path = dst.join(entry.file_name());
+        if src_path.is_dir() {
+            copy_dir_recursive(&src_path, &dst_path)?;
+        } else {
+            fs::copy(&src_path, &dst_path).map_err(|e| e.to_string())?;
+        }
+    }
+    Ok(())
+}
+
 /// huan-ui 进程追踪
 struct HuanUiState {
+    pid: Mutex<Option<u32>>,
+}
+
+/// TTS say 进程 PID 追踪（精准杀进程，不用 pkill 模糊匹配）
+struct TtsState {
     pid: Mutex<Option<u32>>,
 }
 
@@ -106,9 +197,30 @@ impl SttServer {
 #[tauri::command]
 fn quit_app(app: tauri::AppHandle) {
     stop_huan_ui();
-    // 稍等一下让进程有时间退出
     std::thread::sleep(std::time::Duration::from_millis(500));
     app.exit(0);
+}
+
+/// setup 页面完成后关闭 setup 窗口，显示主窗口
+#[tauri::command]
+fn finish_setup(app: tauri::AppHandle) {
+    if let Some(setup_win) = app.get_webview_window("setup") {
+        let _ = setup_win.hide();
+    }
+    if let Some(main_win) = app.get_webview_window("main") {
+        let _ = main_win.show();
+    }
+}
+
+/// 检查 Hermes 是否已安装
+#[tauri::command]
+fn check_hermes_installed() -> bool {
+    let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
+    let candidates = [
+        format!("{}/hermes-agent", home),
+        format!("{}/.hermes/hermes-agent", home),
+    ];
+    candidates.iter().any(|p| PathBuf::from(p).join("venv/bin/python").exists())
 }
 
 #[tauri::command]
@@ -141,10 +253,108 @@ fn show_window(app: tauri::AppHandle) {
     }
 }
 
+/// 用 macOS osascript 弹出原生文件选择对话框，返回选中文件的绝对路径列表
+#[tauri::command]
+async fn pick_files() -> Result<Vec<String>, String> {
+    // 用多行 AppleScript，避免 heredoc 转义问题
+    let output = std::process::Command::new("osascript")
+        .args([
+            "-e", "set theFiles to (choose file with multiple selections allowed with prompt \"选择要发送的文件\")",
+            "-e", "set thePaths to {}",
+            "-e", "repeat with aFile in theFiles",
+            "-e", "  copy POSIX path of aFile to the end of thePaths",
+            "-e", "end repeat",
+            "-e", "return thePaths",
+        ])
+        .output()
+        .map_err(|e| format!("osascript error: {e}"))?;
+
+    if !output.status.success() {
+        // 用户点了取消（exit code 1）→ 返回空列表
+        return Ok(vec![]);
+    }
+
+    let raw = String::from_utf8_lossy(&output.stdout);
+    // osascript 返回逗号分隔的路径列表，例如 "/path/a, /path/b\n"
+    let paths: Vec<String> = raw
+        .split(',')
+        .map(|s| s.trim().trim_end_matches('\n').to_string())
+        .filter(|s| !s.is_empty() && s.starts_with('/'))
+        .collect();
+
+    Ok(paths)
+}
+
+/// 将本地文件上传到 huan-ui /api/upload（multipart POST），返回 workspace 内的服务器路径
+/// session_id 为空时 huan-ui 会报错，需要前端先保证有 session
+#[tauri::command]
+async fn upload_file(local_path: String, session_id: String) -> Result<String, String> {
+    let path = std::path::Path::new(&local_path);
+    let filename = path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("file")
+        .to_string();
+
+    let file_bytes = std::fs::read(&local_path)
+        .map_err(|e| format!("读取文件失败: {e}"))?;
+
+    // 构造 multipart body（手动，避免引入额外依赖）
+    use rand::Rng;
+    let rand_suffix: u64 = rand::thread_rng().gen();
+    let boundary = format!("----HuanhuanBoundary{rand_suffix:016x}");
+    let mut body: Vec<u8> = Vec::new();
+
+    // session_id field
+    body.extend_from_slice(format!("--{boundary}\r\n").as_bytes());
+    body.extend_from_slice(b"Content-Disposition: form-data; name=\"session_id\"\r\n\r\n");
+    body.extend_from_slice(session_id.as_bytes());
+    body.extend_from_slice(b"\r\n");
+
+    // file field
+    body.extend_from_slice(format!("--{boundary}\r\n").as_bytes());
+    body.extend_from_slice(
+        format!("Content-Disposition: form-data; name=\"file\"; filename=\"{filename}\"\r\n").as_bytes()
+    );
+    body.extend_from_slice(b"Content-Type: application/octet-stream\r\n\r\n");
+    body.extend_from_slice(&file_bytes);
+    body.extend_from_slice(b"\r\n");
+    body.extend_from_slice(format!("--{boundary}--\r\n").as_bytes());
+
+    let client = reqwest::Client::builder()
+        .no_proxy()
+        .build()
+        .map_err(|e| format!("HTTP client error: {e}"))?;
+
+    let resp = client
+        .post("http://localhost:8868/api/upload")
+        .header("Content-Type", format!("multipart/form-data; boundary={boundary}"))
+        .body(body)
+        .send()
+        .await
+        .map_err(|e| format!("上传请求失败: {e}"))?;
+
+    let status = resp.status();
+    let json: serde_json::Value = resp.json().await.map_err(|e| format!("响应解析失败: {e}"))?;
+
+    if !status.is_success() {
+        return Err(json["error"].as_str().unwrap_or("上传失败").to_string());
+    }
+
+    // 返回服务器上的绝对路径
+    let server_path = json["path"]
+        .as_str()
+        .or_else(|| json["filename"].as_str())
+        .ok_or("响应中无 path 字段")?
+        .to_string();
+
+    Ok(server_path)
+}
+
 /// 流式调用 huan-ui 的 HTTP API 进行对话
 /// 逐个 chunk 发送给前端，通过 Tauri 事件系统
 #[tauri::command]
-async fn chat(app: tauri::AppHandle, message: String, session_id: Option<String>) -> Result<String, String> {
+async fn chat(app: tauri::AppHandle, message: String, session_id: Option<String>, attachments: Option<Vec<String>>) -> Result<String, String> {
     // 获取或创建 session ID
     let sid = if let Some(s) = session_id {
         if !s.is_empty() { s } else { create_new_session().await? }
@@ -165,16 +375,39 @@ async fn chat(app: tauri::AppHandle, message: String, session_id: Option<String>
     let payload = serde_json::json!({
         "session_id": sid,
         "message": message,
-        "model": "MiniMax-M2.7",
-        "workspace": std::env::var("HOME").unwrap_or_else(|_| ".".to_string())
+        "model": null,  // 由 huan-ui 从 user/config.json 读取，不在此处硬编码
+        "workspace": std::env::var("HOME").unwrap_or_else(|_| ".".to_string()),
+        "attachments": attachments.unwrap_or_default(),
     });
 
-    let response = client
-        .post(url)
-        .json(&payload)
-        .send()
-        .await
-        .map_err(|e| format!("Failed to call huan-ui API: {}", e))?;
+    // 后台可能正在启动，连接失败时重试（最多等30秒）
+    let response = {
+        let mut last_err = String::new();
+        let mut connected = false;
+        let mut result = None;
+        for attempt in 0..30 {
+            match client.post(url).json(&payload).send().await {
+                Ok(r) => {
+                    connected = true;
+                    result = Some(r);
+                    break;
+                }
+                Err(e) => {
+                    last_err = e.to_string();
+                    if attempt == 0 {
+                        // 第一次失败时通知前端后台在启动
+                        let _ = app.emit("chat-backend-starting", ());
+                        eprintln!("[chat] huan-ui not ready, waiting... (attempt {})", attempt + 1);
+                    }
+                    tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+                }
+            }
+        }
+        if !connected {
+            return Err(format!("后台服务启动失败，请重启应用: {}", last_err));
+        }
+        result.unwrap()
+    };
 
     let status = response.status();
 
@@ -185,16 +418,13 @@ async fn chat(app: tauri::AppHandle, message: String, session_id: Option<String>
         eprintln!("[chat] Retrying with new session: {}", new_sid);
 
         // 立即保存新session ID到文件，让JS下次用正确的ID
-        let config_path = format!(
-            "{}/Documents/huanhuan/config/currentSession.txt",
-            std::env::var("HOME").unwrap_or_else(|_| ".".to_string())
-        );
+        let config_path = app_data_subdir("config").join("currentSession.txt");
         let _ = std::fs::write(&config_path, &new_sid);
 
         let retry_payload = serde_json::json!({
             "session_id": new_sid,
             "message": message,
-            "model": "MiniMax-M2.7",
+            "model": null,  // 由 huan-ui 从 user/config.json 读取，不在此处硬编码
             "workspace": std::env::var("HOME").unwrap_or_else(|_| ".".to_string())
         });
         let retry_response = client
@@ -258,34 +488,53 @@ async fn process_response(app: tauri::AppHandle, response: reqwest::Response, si
 
         eprintln!("[stream] Got reply: {}", reply_content);
 
-        // 检查是否包含 <think> 标签
+        // ── O(n) 过滤 <think>…</think>，避免旧代码每字符分配 String 导致 O(n²) 卡顿 ──
         let has_think = reply_content.contains("<think>");
         if !has_think {
-            let result = app.emit("chat-think-end", ());
-            eprintln!("[stream] No <think> tag found, emitted chat-think-end: {:?}", result);
+            let _ = app.emit("chat-think-end", ());
+            eprintln!("[stream] No <think> tag found, emitted chat-think-end");
         }
 
-        // 逐个字符处理，过滤 <think> 标签
-        let mut inside_think = false;
-        let mut i = 0;
-        let mut sent_count = 0;
-        let chars: Vec<char> = reply_content.chars().collect();
+        // 用 str::find 扫描，单次遍历，O(n)
+        let mut visible_text = String::with_capacity(reply_content.len());
+        let mut rest = reply_content.as_str();
+        let mut emitted_think_end = !has_think;
 
-        while i < chars.len() {
-            let substr: String = chars[i..].iter().collect();
-            if !inside_think && substr.starts_with("<think>") {
-                inside_think = true;
-                i += 7;
-            } else if inside_think && substr.starts_with("</think>") {
-                inside_think = false;
-                i += 8;
-                let _ = app.emit("chat-think-end", ());
-            } else if inside_think {
-                i += 1;
-            } else {
-                let _ = app.emit("chat-stream", serde_json::json!({ "token": chars[i].to_string() }));
-                sent_count += 1;
-                i += 1;
+        loop {
+            match rest.find("<think>") {
+                None => {
+                    // 没有更多 think 块，剩余全部是可见文本
+                    visible_text.push_str(rest);
+                    break;
+                }
+                Some(start) => {
+                    // start 之前是可见文本
+                    visible_text.push_str(&rest[..start]);
+                    let after_open = &rest[start + 7..]; // skip "<think>"
+                    match after_open.find("</think>") {
+                        None => {
+                            // 没有闭合标签，停止
+                            break;
+                        }
+                        Some(end) => {
+                            rest = &after_open[end + 8..]; // skip "</think>"
+                            if !emitted_think_end {
+                                let _ = app.emit("chat-think-end", ());
+                                emitted_think_end = true;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // 逐字符发出 chat-stream 事件；每 50 个字符 yield 一次，保持 tokio executor 响应
+        let mut sent_count = 0usize;
+        for ch in visible_text.chars() {
+            let _ = app.emit("chat-stream", serde_json::json!({ "token": ch.to_string() }));
+            sent_count += 1;
+            if sent_count % 50 == 0 {
+                tokio::task::yield_now().await;
             }
         }
 
@@ -355,13 +604,7 @@ fn save_message(
     user_message: String,
     assistant_reply: String,
 ) -> Result<String, String> {
-    let sessions_dir = PathBuf::from(format!(
-        "{}/Documents/huanhuan/sessions",
-        std::env::var("HOME").unwrap_or_else(|_| ".".to_string())
-    ));
-
-    fs::create_dir_all(&sessions_dir)
-        .map_err(|e| format!("Failed to create sessions directory: {}", e))?;
+    let sessions_dir = app_data_subdir("sessions");
 
     // 使用现有 session ID 或生成新的
     let sid = session_id.unwrap_or_else(|| {
@@ -427,10 +670,7 @@ fn save_message(
 /// 读取所有会话列表
 #[tauri::command]
 fn get_all_sessions() -> Result<Vec<serde_json::Value>, String> {
-    let sessions_dir = PathBuf::from(format!(
-        "{}/Documents/huanhuan/sessions",
-        std::env::var("HOME").unwrap_or_else(|_| ".".to_string())
-    ));
+    let sessions_dir = app_data_subdir("sessions");
 
     if !sessions_dir.exists() {
         return Ok(Vec::new());
@@ -465,11 +705,7 @@ fn get_all_sessions() -> Result<Vec<serde_json::Value>, String> {
 /// 读取单个会话
 #[tauri::command]
 fn get_session(session_id: String) -> Result<serde_json::Value, String> {
-    let session_file = PathBuf::from(format!(
-        "{}/Documents/huanhuan/sessions/{}.json",
-        std::env::var("HOME").unwrap_or_else(|_| ".".to_string()),
-        session_id
-    ));
+    let session_file = app_data_subdir("sessions").join(format!("{}.json", session_id));
 
     let content = fs::read_to_string(&session_file)
         .map_err(|e| format!("Failed to read session file: {}", e))?;
@@ -480,21 +716,12 @@ fn get_session(session_id: String) -> Result<serde_json::Value, String> {
 /// 保存当前会话 ID 到配置文件
 #[tauri::command]
 fn save_current_session_id(session_id: Option<String>) -> Result<(), String> {
-    let config_dir = PathBuf::from(format!(
-        "{}/Documents/huanhuan/config",
-        std::env::var("HOME").unwrap_or_else(|_| ".".to_string())
-    ));
-
-    fs::create_dir_all(&config_dir)
-        .map_err(|e| format!("Failed to create config directory: {}", e))?;
-
-    let config_file = config_dir.join("currentSession.txt");
+    let config_file = app_data_subdir("config").join("currentSession.txt");
 
     if let Some(sid) = session_id {
         fs::write(&config_file, &sid)
             .map_err(|e| format!("Failed to save current session: {}", e))?;
     } else {
-        // 如果 session_id 为 None，删除文件或写入空值
         if config_file.exists() {
             fs::remove_file(&config_file)
                 .map_err(|e| format!("Failed to remove current session file: {}", e))?;
@@ -507,10 +734,7 @@ fn save_current_session_id(session_id: Option<String>) -> Result<(), String> {
 /// 加载保存的当前会话 ID
 #[tauri::command]
 fn load_current_session_id() -> Result<Option<String>, String> {
-    let config_file = PathBuf::from(format!(
-        "{}/Documents/huanhuan/config/currentSession.txt",
-        std::env::var("HOME").unwrap_or_else(|_| ".".to_string())
-    ));
+    let config_file = app_data_subdir("config").join("currentSession.txt");
 
     if !config_file.exists() {
         return Ok(None);
@@ -530,30 +754,17 @@ fn load_current_session_id() -> Result<Option<String>, String> {
 /// 保存输入框位置
 #[tauri::command]
 fn save_input_position(left: f64, top: f64) -> Result<(), String> {
-    let config_dir = PathBuf::from(format!(
-        "{}/Documents/huanhuan/config",
-        std::env::var("HOME").unwrap_or_else(|_| ".".to_string())
-    ));
-
-    fs::create_dir_all(&config_dir)
-        .map_err(|e| format!("Failed to create config directory: {}", e))?;
-
-    let config_file = config_dir.join("inputPosition.txt");
+    let config_file = app_data_subdir("config").join("inputPosition.txt");
     let content = format!("{},{}", left as i32, top as i32);
-
     fs::write(&config_file, &content)
         .map_err(|e| format!("Failed to save input position: {}", e))?;
-
     Ok(())
 }
 
 /// 读取保存的输入框位置
 #[tauri::command]
 fn load_input_position() -> Result<Option<(f64, f64)>, String> {
-    let config_file = PathBuf::from(format!(
-        "{}/Documents/huanhuan/config/inputPosition.txt",
-        std::env::var("HOME").unwrap_or_else(|_| ".".to_string())
-    ));
+    let config_file = app_data_subdir("config").join("inputPosition.txt");
 
     if !config_file.exists() {
         return Ok(None);
@@ -575,30 +786,17 @@ fn load_input_position() -> Result<Option<(f64, f64)>, String> {
 /// 保存气泡位置
 #[tauri::command]
 fn save_bubble_position(anchor_y: f64, left: f64) -> Result<(), String> {
-    let config_dir = PathBuf::from(format!(
-        "{}/Documents/huanhuan/config",
-        std::env::var("HOME").unwrap_or_else(|_| ".".to_string())
-    ));
-
-    fs::create_dir_all(&config_dir)
-        .map_err(|e| format!("Failed to create config directory: {}", e))?;
-
-    let config_file = config_dir.join("bubblePosition.txt");
+    let config_file = app_data_subdir("config").join("bubblePosition.txt");
     let content = format!("{},{}", anchor_y as i32, left as i32);
-
     fs::write(&config_file, &content)
         .map_err(|e| format!("Failed to save bubble position: {}", e))?;
-
     Ok(())
 }
 
 /// 读取保存的气泡位置
 #[tauri::command]
 fn load_bubble_position() -> Result<Option<(f64, f64)>, String> {
-    let config_file = PathBuf::from(format!(
-        "{}/Documents/huanhuan/config/bubblePosition.txt",
-        std::env::var("HOME").unwrap_or_else(|_| ".".to_string())
-    ));
+    let config_file = app_data_subdir("config").join("bubblePosition.txt");
 
     if !config_file.exists() {
         return Ok(None);
@@ -617,25 +815,58 @@ fn load_bubble_position() -> Result<Option<(f64, f64)>, String> {
     Ok(None)
 }
 
-/// TTS：调用 Mac 原生 say 命令朗读文字（使用系统默认语音）
-#[tauri::command]
-fn speak_text(text: String) -> Result<(), String> {
-    // 先停止任何正在进行的朗读
-    let _ = std::process::Command::new("pkill").arg("-f").arg("say ").output();
+/// 通过 PID 精准停止 say 进程
+fn kill_say_pid(pid: u32) {
+    let _ = Command::new("kill").args(["-TERM", &pid.to_string()]).output();
+}
 
-    // 不指定 -v，直接使用系统朗读设置中的默认语音
-    std::process::Command::new("say")
-        .arg(&text)
+/// TTS：调用 Mac 原生 say 命令朗读文字，文字写入临时文件避免超长参数问题
+#[tauri::command]
+fn speak_text(text: String, state: tauri::State<TtsState>) -> Result<(), String> {
+    // 精准停止上一个 say 进程（用 PID，不用 pkill 模糊匹配）
+    {
+        let mut pid_lock = state.pid.lock().unwrap();
+        if let Some(old_pid) = pid_lock.take() {
+            eprintln!("[TTS] 停止旧 say 进程 PID={}", old_pid);
+            kill_say_pid(old_pid);
+        }
+    }
+
+    // say（无论参数还是 -f 文件方式）遇到 \n\n 都当段落结束符停止朗读
+    // 把多余换行压缩成单空格，保证全文连续朗读
+    let clean: String = text
+        .split('\n')
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())
+        .collect::<Vec<_>>()
+        .join(" ");
+
+    eprintln!("[TTS] speak_text 原长度={} 清理后={}, 前50字={:?}",
+        text.len(), clean.len(), clean.chars().take(50).collect::<String>());
+
+    let child = Command::new("say")
+        .arg(&clean)
         .spawn()
         .map_err(|e| format!("Failed to speak: {}", e))?;
+
+    let new_pid = child.id();
+    eprintln!("[TTS] 新 say 进程 PID={}", new_pid);
+
+    // 保存 PID，让 Child 正常释放（不 kill/wait，进程独立运行）
+    *state.pid.lock().unwrap() = Some(new_pid);
+    std::mem::forget(child);
 
     Ok(())
 }
 
 /// TTS：停止当前朗读
 #[tauri::command]
-fn stop_speaking() -> Result<(), String> {
-    let _ = std::process::Command::new("pkill").arg("-f").arg("say ").output();
+fn stop_speaking(state: tauri::State<TtsState>) -> Result<(), String> {
+    let mut pid_lock = state.pid.lock().unwrap();
+    if let Some(pid) = pid_lock.take() {
+        eprintln!("[TTS] stop_speaking 停止 PID={}", pid);
+        kill_say_pid(pid);
+    }
     Ok(())
 }
 
@@ -757,7 +988,35 @@ fn is_port_in_use(port: u16) -> bool {
     }
 }
 
+/// 供前端调用：检查 huan-ui 后台是否已就绪（避免前端 fetch 被 CSP 拦截）
+#[tauri::command]
+fn check_backend_ready() -> bool {
+    is_port_in_use(8868)
+}
+
+/// 获取角色列表（代理 /api/characters/list，绕过前端 CSP）
+#[tauri::command]
+async fn get_characters() -> Result<serde_json::Value, String> {
+    let client = reqwest::Client::builder().no_proxy().build()
+        .map_err(|e| e.to_string())?;
+    let resp = client.get("http://127.0.0.1:8868/api/characters/list")
+        .send().await.map_err(|e| e.to_string())?;
+    resp.json::<serde_json::Value>().await.map_err(|e| e.to_string())
+}
+
+/// 切换角色（代理 /api/characters/{id}/switch，绕过前端 CSP）
+#[tauri::command]
+async fn switch_character(character_id: String) -> Result<serde_json::Value, String> {
+    let client = reqwest::Client::builder().no_proxy().build()
+        .map_err(|e| e.to_string())?;
+    let url = format!("http://127.0.0.1:8868/api/characters/{}/switch", character_id);
+    let resp = client.post(&url).send().await.map_err(|e| e.to_string())?;
+    resp.json::<serde_json::Value>().await.map_err(|e| e.to_string())
+}
+
 /// 启动 huan-ui 服务 (Python webui on port 8868)
+/// huan-ui 源码打包在 app bundle Resources/huan-ui/ 里
+/// venv 和运行时数据放在 ~/Library/Application Support/huanhuan/
 fn start_huan_ui(app: tauri::AppHandle) {
     // 检查 8868 端口是否已被占用（可能已有一个 huan-ui 实例运行）
     if is_port_in_use(8868) {
@@ -766,49 +1025,152 @@ fn start_huan_ui(app: tauri::AppHandle) {
     }
 
     let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
-    let huan_ui_dir = PathBuf::from(format!("{}/Documents/huanhuan/huan-ui", home));
-    let start_script = huan_ui_dir.join("start-huan-ui.sh");
 
-    if !start_script.exists() {
-        eprintln!("[huan-ui] Start script not found at {:?}", start_script);
+    // 1. 找 bundle 里的 huan-ui 源码目录
+    let resource_dir = app.path().resource_dir()
+        .unwrap_or_else(|_| PathBuf::from("."));
+    let bundled_huan_ui = resource_dir.join("huan-ui");
+
+    // 兼容开发模式：bundle 里没有时，回退到本地开发路径
+    let huan_ui_src = if bundled_huan_ui.join("server.py").exists() {
+        eprintln!("[huan-ui] Using bundled huan-ui at {:?}", bundled_huan_ui);
+        bundled_huan_ui
+    } else {
+        let dev_path = PathBuf::from(format!("{}/Documents/huanhuan/huan-ui", home));
+        eprintln!("[huan-ui] Bundle not found, falling back to dev path: {:?}", dev_path);
+        dev_path
+    };
+
+    if !huan_ui_src.join("server.py").exists() {
+        eprintln!("[huan-ui] server.py not found, cannot start huan-ui");
         return;
     }
 
-    // 在后台启动 huan-ui 脚本（用 bash 直接执行，不需要 login shell）
+    // 2. 运行时数据目录：~/Library/Application Support/huanhuan/
+    let app_support = PathBuf::from(format!(
+        "{}/Library/Application Support/huanhuan", home
+    ));
+    let venv_dir = app_support.join(".venv");
+    let webui_dir = app_support.join("webui");
+    let user_dir = app_support.join("user");
+
+    // 确保运行时目录存在
+    for dir in [&app_support, &webui_dir, &user_dir] {
+        if let Err(e) = std::fs::create_dir_all(dir) {
+            eprintln!("[huan-ui] Failed to create dir {:?}: {}", dir, e);
+        }
+    }
+
+    // 3. 找 hermes-agent（用户自行安装）
+    let hermes_agent_dir = {
+        let candidates = [
+            format!("{}/hermes-agent", home),
+            format!("{}/.hermes/hermes-agent", home),
+        ];
+        candidates.iter()
+            .find(|p| PathBuf::from(p).join("venv/bin/python").exists())
+            .map(|p| PathBuf::from(p))
+    };
+
+    let Some(agent_dir) = hermes_agent_dir else {
+        eprintln!("[huan-ui] hermes-agent not found at ~/hermes-agent or ~/.hermes/hermes-agent");
+        return;
+    };
+    let python = agent_dir.join("venv/bin/python");
+    eprintln!("[huan-ui] Using hermes-agent: {:?}", agent_dir);
+
+    // 4. 首次运行：创建 venv 并安装 pyyaml
+    if !venv_dir.join("bin/python").exists() {
+        eprintln!("[huan-ui] Creating venv at {:?}", venv_dir);
+        let _ = Command::new(&python)
+            .args(["-m", "venv", venv_dir.to_str().unwrap()])
+            .output();
+        let venv_python = venv_dir.join("bin/python");
+        let req_file = huan_ui_src.join("requirements.txt");
+        eprintln!("[huan-ui] Installing dependencies...");
+        let _ = Command::new(&venv_python)
+            .args(["-m", "pip", "install", "-q", "-r", req_file.to_str().unwrap()])
+            .output();
+        eprintln!("[huan-ui] Dependencies installed");
+    }
+
+    let venv_python = venv_dir.join("bin/python");
+
+    // 5. 加载 .env 文件（优先 ~/.hermes/.env，再 hermes-agent/.env）
+    let mut extra_env: Vec<(String, String)> = vec![];
+    let env_files = [
+        PathBuf::from(format!("{}/.hermes/.env", home)),  // 主要：含 API keys
+        agent_dir.join(".env"),                             // 备用
+    ];
+
+    fn load_env_file(path: &PathBuf, env: &mut Vec<(String, String)>) {
+        if let Ok(content) = std::fs::read_to_string(path) {
+            let mut added = 0;
+            for line in content.lines() {
+                let line = line.trim();
+                if line.starts_with('#') || line.is_empty() || !line.contains('=') { continue; }
+                if let Some((k, v)) = line.split_once('=') {
+                    let k = k.trim().to_string();
+                    let v = v.trim().trim_matches('"').to_string();
+                    // 不重复添加已有的 key
+                    if !env.iter().any(|(ek, _)| ek == &k) {
+                        env.push((k, v));
+                        added += 1;
+                    }
+                }
+            }
+            eprintln!("[huan-ui] Loaded {} vars from {:?}", added, path);
+        }
+    }
+
+    for env_file in &env_files {
+        load_env_file(env_file, &mut extra_env);
+    }
+
+    eprintln!("[huan-ui] Total env vars loaded: {}", extra_env.len());
+
+    // 6. 启动 server.py
     let app_clone = app.clone();
+    let huan_ui_src_clone = huan_ui_src.clone();
+    let app_support_clone = app_support.clone();
+
     std::thread::spawn(move || {
-        match Command::new("/bin/bash")
-            .arg(&start_script)
-            .current_dir(&huan_ui_dir)
-            .spawn()
-        {
+        let mut cmd = Command::new(&venv_python);
+        cmd.arg(huan_ui_src_clone.join("server.py"))
+           .current_dir(&huan_ui_src_clone)
+           .env("HERMES_WEBUI_AGENT_DIR", &agent_dir)
+           .env("HERMES_WEBUI_PORT", "8868")
+           .env("HERMES_WEBUI_HOST", "127.0.0.1")
+           .env("HERMES_HOME", format!("{}/.hermes", home))  // hermes 原始数据目录（profiles/记忆等）
+           .env("HERMES_WEBUI_STATE_DIR", app_support_clone.join("webui").to_str().unwrap_or(""))
+           .env("HERMES_WEBUI_USER_DIR", app_support_clone.join("user").to_str().unwrap_or(""));
+
+        for (k, v) in &extra_env {
+            cmd.env(k, v);
+        }
+
+        match cmd.spawn() {
             Ok(mut child) => {
                 let pid = child.id();
-                eprintln!("[huan-ui] Started huan-ui service (PID: {})", pid);
-                // 保存 PID 到 managed state，供退出时清理
+                eprintln!("[huan-ui] Started (PID: {})", pid);
                 if let Some(state) = app_clone.try_state::<HuanUiState>() {
                     *state.pid.lock().unwrap() = Some(pid);
                 }
                 match child.wait() {
-                    Ok(status) => {
-                        if !status.success() {
-                            eprintln!("[huan-ui] Process exited with status: {}", status);
-                        }
-                    }
-                    Err(e) => eprintln!("[huan-ui] Error waiting for process: {}", e),
+                    Ok(status) => eprintln!("[huan-ui] Exited: {}", status),
+                    Err(e) => eprintln!("[huan-ui] Wait error: {}", e),
                 }
-                // 进程退出后清空 PID
                 if let Some(state) = app_clone.try_state::<HuanUiState>() {
                     *state.pid.lock().unwrap() = None;
                 }
             }
-            Err(e) => eprintln!("[huan-ui] Failed to start huan-ui: {}", e),
+            Err(e) => eprintln!("[huan-ui] Failed to start: {}", e),
         }
     });
 
-    // 后台健康检测线程：轮询 8868 端口，最多等 15 秒
+    // 7. 健康检测：最多等 30 秒
     std::thread::spawn(move || {
-        let max_ms: u64 = 15_000;
+        let max_ms: u64 = 30_000;
         let interval = std::time::Duration::from_millis(500);
         let mut elapsed: u64 = 0;
         while elapsed < max_ms {
@@ -818,9 +1180,8 @@ fn start_huan_ui(app: tauri::AppHandle) {
                 eprintln!("[huan-ui] ✓ Ready after ~{}ms", elapsed);
                 return;
             }
-            eprintln!("[huan-ui] Waiting for huan-ui... ({}ms)", elapsed);
         }
-        eprintln!("[huan-ui] ⚠ Timeout: huan-ui not ready after {}ms", max_ms);
+        eprintln!("[huan-ui] ⚠ Timeout: not ready after {}ms", max_ms);
     });
 }
 
@@ -859,9 +1220,22 @@ pub fn run() {
             stop_speaking,
             warm_stt,
             transcribe_audio,
-            stop_voice_recognition
+            stop_voice_recognition,
+            check_backend_ready,
+            get_characters,
+            switch_character,
+            finish_setup,
+            check_hermes_installed,
+            pick_files,
+            upload_file
         ])
         .setup(|app| {
+            // 旧数据迁移（~/Documents/huanhuan → ~/Library/Application Support/huanhuan）
+            migrate_legacy_data();
+
+            // 首次启动：从 bundle 初始化默认角色
+            init_default_characters(app.handle());
+
             // 注册 STT 常驻进程状态
             let stt_script = find_stt_script()
                 .unwrap_or_else(|| PathBuf::from("stt_server.py"));
@@ -870,8 +1244,25 @@ pub fn run() {
             // 注册 huan-ui 进程状态（用于退出时清理）
             app.manage(HuanUiState { pid: Mutex::new(None) });
 
+            // 注册 TTS say 进程 PID 状态
+            app.manage(TtsState { pid: Mutex::new(None) });
+
             // 启动 huan-ui 服务
             start_huan_ui(app.handle().clone());
+
+            // 首次启动检测：没有 user/config.json → 显示 setup 窗口，隐藏主窗口
+            let user_config = app_data_subdir("user").join("config.json");
+            if !user_config.exists() {
+                // 先隐藏主窗口（alwaysOnTop 透明窗口会拦截 setup 的所有点击）
+                if let Some(main_win) = app.get_webview_window("main") {
+                    let _ = main_win.hide();
+                }
+                if let Some(setup_win) = app.get_webview_window("setup") {
+                    let _ = setup_win.show();
+                    // 强制抢焦点：show() 后窗口可见但不一定成为 key window
+                    let _ = setup_win.set_focus();
+                }
+            }
 
             let window = app.get_webview_window("main").unwrap();
 

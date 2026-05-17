@@ -25,35 +25,107 @@ from api.config import (
 _ENV_LOCK = threading.Lock()
 
 
-def _preprocess_attachments(attachments, workspace):
-    """Analyze attached images via the vision tool and return enriched text.
+# Free vision models to try in order (first working one wins)
+_VISION_FREE_MODELS = [
+    "nvidia/nemotron-nano-12b-v2-vl:free",
+    "google/gemma-4-31b-it:free",
+    "google/gemma-4-26b-a4b-it:free",
+]
 
-    Mirrors the CLI's _preprocess_images_with_vision approach: images are
-    analyzed through the auxiliary vision model and descriptions are prepended
-    to the message text so the agent can see what the images contain.
+def _analyze_image_openrouter(image_path: Path, api_key: str) -> str:
+    """Direct OpenRouter vision call, tries free models in order until one works.
+
+    Bypasses the Hermes auxiliary_client chain which routes to MiniMax
+    (the main chat provider) — MiniMax does not support base64 image_url.
     """
-    if not attachments:
-        return ""
+    import base64
+    import urllib.request
+    import urllib.error
 
-    import asyncio
-    import json
+    mime_map = {'.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.png': 'image/png',
+                '.gif': 'image/gif', '.webp': 'image/webp', '.bmp': 'image/bmp'}
+    mime = mime_map.get(image_path.suffix.lower(), 'image/jpeg')
 
-    try:
-        from tools.vision_tools import vision_analyze_tool
-    except ImportError:
-        return ""
+    data = image_path.read_bytes()
+    b64 = base64.b64encode(data).decode('ascii')
+    data_url = f"data:{mime};base64,{b64}"
 
-    analysis_prompt = (
+    prompt = (
         "Describe everything visible in this image in thorough detail. "
         "Include any text, code, data, objects, people, layout, colors, "
         "and any other notable visual information."
     )
 
+    last_err = None
+    for model in _VISION_FREE_MODELS:
+        payload = json.dumps({
+            "model": model,
+            "messages": [{"role": "user", "content": [
+                {"type": "image_url", "image_url": {"url": data_url}},
+                {"type": "text", "text": prompt},
+            ]}],
+            "max_tokens": 1024,
+        }).encode('utf-8')
+        req = urllib.request.Request(
+            "https://openrouter.ai/api/v1/chat/completions",
+            data=payload,
+            headers={
+                "Authorization": f"Bearer {api_key}",
+                "Content-Type": "application/json",
+                "HTTP-Referer": "https://hermes-agent.nousresearch.com",
+                "X-Title": "huanhuan-desktop",
+            },
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=60) as resp:
+                result = json.loads(resp.read().decode('utf-8'))
+            content = result["choices"][0]["message"]["content"]
+            if content:  # Skip models that return null content
+                print(f"[webui] vision: used model {model}", flush=True)
+                return content
+            print(f"[webui] vision: {model} returned empty content, trying next", flush=True)
+        except urllib.error.HTTPError as e:
+            last_err = f"HTTP {e.code} from {model}"
+            print(f"[webui] vision: {model} failed ({e.code}), trying next...", flush=True)
+        except Exception as e:
+            last_err = str(e)
+            print(f"[webui] vision: {model} error ({e}), trying next...", flush=True)
+
+    raise RuntimeError(f"All vision models failed. Last error: {last_err}")
+
+
+def _preprocess_attachments(attachments, workspace):
+    """Analyze attached images and return enriched context text.
+
+    Uses direct OpenRouter API (google/gemma-4-31b-it:free) for vision,
+    which avoids the auxiliary_client auto chain that incorrectly routes
+    to MiniMax (the main provider) — MiniMax rejects base64 image_url.
+    Falls back to the Hermes vision_analyze_tool if OpenRouter key is absent.
+    """
+    if not attachments:
+        return ""
+
+    # Prefer OpenRouter API key from Hermes config, then env var
+    or_api_key = ""
+    try:
+        from hermes_cli.config import read_raw_config
+        _cfg = read_raw_config()
+        _aux_vis = _cfg.get("auxiliary", {}).get("vision", {})
+        if _aux_vis.get("provider") == "openrouter" and _aux_vis.get("api_key"):
+            or_api_key = _aux_vis["api_key"]
+    except Exception:
+        pass
+    if not or_api_key:
+        or_api_key = os.environ.get("OPENROUTER_API_KEY", "")
+    # No key found — vision will fail gracefully below
+    if not or_api_key:
+        print("[webui] vision: no OPENROUTER_API_KEY found, skipping vision", flush=True)
+
     ws = Path(workspace)
     enriched_parts = []
     for img_path in attachments:
         p = Path(img_path)
-        # If relative path, resolve against workspace
         if not p.is_absolute():
             p = ws / p
         if not p.exists() or p.suffix.lower() not in IMAGE_EXTS:
@@ -61,28 +133,38 @@ def _preprocess_attachments(attachments, workspace):
         size_kb = p.stat().st_size // 1024
         print(f"[webui] vision: analyzing {p.name} ({size_kb}KB)...", flush=True)
         try:
-            result_json = asyncio.run(
-                vision_analyze_tool(image_url=str(p), user_prompt=analysis_prompt)
-            )
-            result = json.loads(result_json)
-            if result.get("success"):
-                description = result.get("analysis", "")
-                enriched_parts.append(
-                    f"[The user attached an image. Here's what it contains:\n{description}]\n"
-                    f"[If you need a closer look, use vision_analyze with image_url: {p}]"
-                )
-                print(f"[webui] vision: {p.name} analyzed successfully", flush=True)
-            else:
-                enriched_parts.append(
-                    f"[The user attached an image ({p.name}) but it couldn't be analyzed. "
-                    f"You can try examining it with vision_analyze using image_url: {p}]"
-                )
-                print(f"[webui] vision: {p.name} analysis failed: {result.get('error')}", flush=True)
-        except Exception as e:
+            description = _analyze_image_openrouter(p, or_api_key)
             enriched_parts.append(
-                f"[The user attached an image ({p.name}) but analysis raised an exception: {e}]"
+                f"[The user attached an image. Here's what it contains:\n{description}]\n"
+                f"[If you need a closer look, use vision_analyze with image_url: {p}]"
             )
-            print(f"[webui] vision: {p.name} exception: {e}", flush=True)
+            print(f"[webui] vision: {p.name} analyzed successfully via OpenRouter", flush=True)
+        except Exception as e:
+            print(f"[webui] vision: OpenRouter failed ({e}), trying auxiliary_client...", flush=True)
+            # Fallback: try Hermes auxiliary vision tool
+            try:
+                import asyncio as _asyncio
+                from tools.vision_tools import vision_analyze_tool as _vat
+                result_json = _asyncio.run(_vat(image_url=str(p), user_prompt=(
+                    "Describe everything visible in this image in thorough detail."
+                )))
+                result = json.loads(result_json)
+                if result.get("success"):
+                    enriched_parts.append(
+                        f"[The user attached an image. Here's what it contains:\n{result.get('analysis', '')}]\n"
+                        f"[If you need a closer look, use vision_analyze with image_url: {p}]"
+                    )
+                else:
+                    enriched_parts.append(
+                        f"[The user attached an image ({p.name}) but analysis failed. "
+                        f"Try: vision_analyze with image_url: {p}]"
+                    )
+            except Exception as e2:
+                enriched_parts.append(
+                    f"[The user attached an image ({p.name}). "
+                    f"You can examine it with vision_analyze using image_url: {p}]"
+                )
+                print(f"[webui] vision: fallback also failed: {e2}", flush=True)
 
     if not enriched_parts:
         return ""

@@ -1,4 +1,4 @@
-#!/opt/homebrew/bin/python3
+#!/usr/bin/env python3
 """
 STT 常驻服务：启动一次，保持进程热，通过 stdin/stdout 收发任务
 协议（每行一个请求）：

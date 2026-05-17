@@ -20,6 +20,8 @@ chrono = "0.4"
 regex = "1"
 rand = "0.8"
 futures-util = "0.3"
+tokio = { version = "1", features = ["rt", "time"] }
+base64 = "0.22"
 
 [profile.release]
 codegen-units = 1

@@ -39,6 +39,7 @@ const characterSubmenu = document.getElementById('character-submenu');
 const avatar = document.getElementById('avatar');
 const copyBtn = document.getElementById('copy-btn');
 const voiceBtn = document.getElementById('voice-btn');
+const bubbleActions = document.getElementById('bubble-actions');
 const voiceInputBtn = document.getElementById('voice-input-btn');
 const fileBtn = document.getElementById('file-btn');
 
@@ -147,18 +148,22 @@ function initCanvas(frameWidth = null, frameHeight = null) {
 async function initCharacter() {
   try {
     console.log('[character] 正在从服务器加载人物配置...');
-    const response = await fetch(`${BACKEND_URL}/api/characters/list`);
+    const data = await invoke('get_characters');
+    // active 可能为 null（新安装），自动用第一个角色
+    const activeCharacterId = data.active || (data.characters[0]?.id);
+    let characterConfig = data.characters.find(c => c.id === activeCharacterId);
 
-    if (!response.ok) {
-      throw new Error(`HTTP ${response.status}`);
+    if (!characterConfig && data.characters.length > 0) {
+      characterConfig = data.characters[0];
     }
 
-    const data = await response.json();
-    const activeCharacterId = data.active;
-    const characterConfig = data.characters.find(c => c.id === activeCharacterId);
-
     if (!characterConfig) {
-      throw new Error(`找不到人物配置: ${activeCharacterId}`);
+      throw new Error('没有可用角色');
+    }
+
+    // 如果没有 active，自动切换到第一个
+    if (!data.active && characterConfig) {
+      invoke('switch_character', { characterId: characterConfig.id }).catch(() => {});
     }
 
     currentCharacter = characterConfig.id;
@@ -348,17 +353,7 @@ async function switchCharacter(characterId) {
 
   try {
     // 切换激活人物
-    const response = await fetch(`${BACKEND_URL}/api/characters/${characterId}/switch`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({})
-    });
-
-    if (!response.ok) {
-      throw new Error(`HTTP ${response.status}`);
-    }
-
-    const data = await response.json();
+    const data = await invoke('switch_character', { characterId });
 
     if (!data.ok) {
       throw new Error(data.error || '切换失败');
@@ -524,9 +519,9 @@ document.addEventListener('mousedown', (e) => {
     bubbleDragging = true;
     bubbleStartX = e.clientX;
     bubbleStartY = e.clientY;
-    // 获取当前气泡的 left 和 top 值（相对于容器）
+    bubbleStartTop = parseInt(bubble.style.top) || (bubbleAnchorY - bubble.offsetHeight);
     bubbleStartLeft = parseInt(bubble.style.left) || 5;
-    bubbleStartTop = parseInt(bubble.style.top) || 175;
+    bubble.style.bottom = 'auto';
     e.preventDefault();
   }
 });
@@ -540,15 +535,14 @@ document.addEventListener('mousemove', (e) => {
   const newLeft = bubbleStartLeft + dx;
   const newTop = bubbleStartTop + dy;
 
-  // fixed 定位相对于窗口，无需限制边界，气泡可以自由移动到任何位置
   bubble.style.left = newLeft + 'px';
   bubble.style.top = newTop + 'px';
 });
 
 document.addEventListener('mouseup', (e) => {
   if (bubbleDragging) {
-    // 保存拖动后的位置：底部锚点 = top + 当前高度
-    bubbleAnchorY = parseInt(bubble.style.top || 0) + bubble.offsetHeight;
+    // 拖动结束：新锚点 = top（transform 使底边贴 top 值）
+    bubbleAnchorY = parseInt(bubble.style.top || bubbleAnchorY);
     bubbleSavedLeft = parseInt(bubble.style.left || 5);
     // 持久化到磁盘
     invoke('save_bubble_position', { anchorY: bubbleAnchorY, left: bubbleSavedLeft })
@@ -717,20 +711,24 @@ msgInput.addEventListener('keypress', (e) => {
 let DEBUG_MODE = false;
 let debugLogs = [];
 
-// 动态更新气泡高度
+// 气泡定位：setInterval 每 80ms 修正一次 top = anchorY - offsetHeight
+// 用 offsetHeight（渲染后真实高度），绕过 WKWebView 的时序问题
+setInterval(() => {
+  if (!bubble.classList.contains('showing')) return;
+  const h = bubble.offsetHeight;
+  if (h <= 0) return;
+  const newTop = Math.max(0, bubbleAnchorY - h);
+  if (bubble.style.top !== newTop + 'px') {
+    bubble.style.top = newTop + 'px';
+  }
+}, 80);
+
 function updateBubbleHeight() {
-  const maxHeight = 200;
-  const contentHeight = bubbleText.scrollHeight;
-  const padding = 24;
-  const finalHeight = Math.min(contentHeight + padding, maxHeight);
-
-  // 用保存的锚点，向上增长
-  const newTop = Math.max(0, bubbleAnchorY - finalHeight);
-  const visibleHeight = bubbleAnchorY - newTop;
-
-  bubble.style.top = newTop + 'px';
-  bubble.style.height = visibleHeight + 'px';
-  bubble.style.overflowY = finalHeight > bubbleAnchorY ? 'auto' : 'hidden';
+  bubble.style.left = bubbleSavedLeft + 'px';
+  bubble.style.maxHeight = Math.min(200, bubbleAnchorY) + 'px';
+  // 立即修正一次
+  const h = bubble.offsetHeight;
+  if (h > 0) bubble.style.top = Math.max(0, bubbleAnchorY - h) + 'px';
 }
 
 function debugLog(label, message) {
@@ -770,24 +768,11 @@ function showBubble(text, persist = false, showCopyBtn = false) {
   bubble.classList.add('entering');
   bubble.addEventListener('animationend', () => bubble.classList.remove('entering'), { once: true });
 
-  // 动态调整气泡高度：底部锚定在拖动保存的位置，向上增长
-  setTimeout(() => {
-    const contentHeight = bubbleText.scrollHeight;
-    const padding = 24;
-    const finalHeight = contentHeight + padding;
+  // 底部锚定定位（CSS height:auto + max-height 自动撑开，内容向上增长）
+  updateBubbleHeight();
 
-    // 向上增长：top = anchorY - finalHeight，但不超出窗口顶部
-    const newTop = Math.max(0, bubbleAnchorY - finalHeight);
-    const visibleHeight = bubbleAnchorY - newTop;
-
-    bubble.style.left = bubbleSavedLeft + 'px';
-    bubble.style.top = newTop + 'px';
-    bubble.style.height = visibleHeight + 'px';
-    bubble.style.overflowY = finalHeight > bubbleAnchorY ? 'auto' : 'hidden';
-  }, 50);
-
-  // 显示/隐藏复制按钮
-  copyBtn.style.display = showCopyBtn ? 'block' : 'none';
+  // 显示/隐藏按钮区域
+  bubbleActions.style.display = showCopyBtn ? 'flex' : 'none';
 
   if (persist) {
     // 回复信息保留 40 秒，鼠标进入则保持
@@ -814,11 +799,125 @@ function showBubble(text, persist = false, showCopyBtn = false) {
   }
 }
 
+// ── 附件功能 ────────────────────────────────────────────────────────
+const attachmentChips = document.getElementById('attachment-chips');
+
+// 待发送的附件路径列表（上传后的服务器路径）
+let pendingAttachments = [];
+
+// 渲染附件 chip 列表
+function renderAttachmentChips() {
+  attachmentChips.innerHTML = '';
+  if (pendingAttachments.length === 0) {
+    attachmentChips.classList.remove('has-items');
+    return;
+  }
+  attachmentChips.classList.add('has-items');
+  pendingAttachments.forEach((att, idx) => {
+    const chip = document.createElement('div');
+    chip.className = 'attachment-chip';
+
+    // 文件类型图标（小）
+    const icon = document.createElement('span');
+    icon.textContent = att.previewUrl ? '🖼' : '📄';
+    icon.style.fontSize = '10px';
+    chip.appendChild(icon);
+
+    const name = document.createElement('span');
+    name.className = 'chip-name';
+    name.textContent = att.uploading ? `⏳ ${att.filename}` : att.filename;
+    chip.appendChild(name);
+
+    const remove = document.createElement('span');
+    remove.className = 'chip-remove';
+    remove.textContent = '✕';
+    remove.addEventListener('click', (e) => {
+      e.stopPropagation();
+      if (att.previewUrl) URL.revokeObjectURL(att.previewUrl);
+      pendingAttachments.splice(idx, 1);
+      renderAttachmentChips();
+    });
+    chip.appendChild(remove);
+
+    attachmentChips.appendChild(chip);
+  });
+}
+
+
+// 确保有 session_id（上传前需要）
+async function ensureSessionId() {
+  if (currentSessionId) return currentSessionId;
+  const resp = await fetch(`${BACKEND_URL}/api/session/new`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ workspace: '' }),
+  });
+  if (!resp.ok) throw new Error('无法创建会话');
+  const data = await resp.json();
+  const newSid = data.session?.session_id || data.session_id;
+  if (newSid) {
+    currentSessionId = newSid;
+    await persistCurrentSessionId();
+  }
+  return currentSessionId;
+}
+
+// 📎 按钮 → Tauri 原生文件对话框 → Rust 上传到 huan-ui workspace
+fileBtn.addEventListener('click', async (e) => {
+  e.stopPropagation();
+  try {
+    const paths = await invoke('pick_files');
+    if (!paths || paths.length === 0) return;
+
+    // 确保有 session（upload 需要 session_id 来确定 workspace）
+    const sid = await ensureSessionId();
+
+    for (const localPath of paths) {
+      const filename = localPath.split('/').pop();
+      // 图片用 asset 协议生成本地预览（上传过程中先显示）
+      const isImage = /\.(png|jpe?g|gif|webp|bmp)$/i.test(filename);
+      const previewUrl = isImage && window.__TAURI__?.core?.convertFileSrc
+        ? window.__TAURI__.core.convertFileSrc(localPath)
+        : null;
+
+      // 先显示 chip（上传中状态）
+      const attEntry = { serverPath: null, filename, previewUrl, uploading: true };
+      pendingAttachments.push(attEntry);
+      renderAttachmentChips();
+
+      try {
+        // Rust 读取文件字节并 POST multipart 到 huan-ui
+        const serverPath = await invoke('upload_file', { localPath, sessionId: sid });
+        attEntry.serverPath = serverPath;
+        attEntry.uploading = false;
+        renderAttachmentChips();
+      } catch (err) {
+        console.error('[upload] 上传失败:', err);
+        // 上传失败 → 从列表移除
+        const idx = pendingAttachments.indexOf(attEntry);
+        if (idx !== -1) pendingAttachments.splice(idx, 1);
+        renderAttachmentChips();
+        showBubble(`上传失败: ${err}`, false, false);
+      }
+    }
+  } catch (err) {
+    console.error('[pick_files] 文件选择失败:', err);
+  }
+});
+
 // ── 发送消息（通过 Rust 后端转发 huan-ui 流式）────────────────────────
 async function sendMessage() {
-  const text = msgInput.value.trim();
-  if (!text) return;
+  const rawText = msgInput.value.trim();
+  if (!rawText && pendingAttachments.length === 0) return;
+  // 只有附件没有文字时，用默认提示让 AI 描述附件
+  const text = rawText || '请描述一下这个附件';
   msgInput.value = '';
+
+  // 附件文件名追加到消息文本（与 huan-ui 保持一致，让 agent 知道有文件可读）
+  const filenames = pendingAttachments.filter(a => a.serverPath && !a.uploading).map(a => a.filename);
+  let finalText = text;
+  if (filenames.length && text) finalText = `${text}\n\n[Attached files: ${filenames.join(', ')}]`;
+  else if (filenames.length)   finalText = `I've uploaded ${filenames.length} file(s): ${filenames.join(', ')}`;
 
   // 检测特殊命令
   if (text === '/new') {
@@ -831,6 +930,14 @@ async function sendMessage() {
     console.log('[/new] New conversation initiated, currentSessionId now:', currentSessionId);
     return;
   }
+
+  // 收集已上传成功的附件路径（跳过仍在上传中的）
+  const attachmentsToSend = pendingAttachments
+    .filter(a => a.serverPath && !a.uploading)
+    .map(a => a.serverPath);
+  pendingAttachments.forEach(a => { if (a.previewUrl) URL.revokeObjectURL(a.previewUrl); });
+  pendingAttachments = [];
+  renderAttachmentChips();
 
   // 显示"思考中"气泡：绑定鼠标暂停/恢复监听器，但立刻取消计时，等回复完成后再开始 40 秒
   showBubble('思考中…', true, false);
@@ -862,16 +969,10 @@ async function sendMessage() {
       tokenCount++;
       debugLog('STREAM', `Token #${tokenCount}: "${token}"`);
 
-      // 第一个 token 到达时，显示复制和语音按钮（如果还没显示的话）
+      // 第一个 token 到达时，显示按钮区域（如果还没显示的话）
       if (!firstTokenShown) {
         firstTokenShown = true;
-        copyBtn.style.display = 'block';
-        voiceBtn.style.display = 'block';
-      }
-
-      // 每 5 个 token 更新一次气泡高度
-      if (tokenCount % 5 === 0) {
-        updateBubbleHeight();
+        bubbleActions.style.display = 'flex';
       }
 
       if (tokenCount % 10 === 0) {
@@ -883,7 +984,8 @@ async function sendMessage() {
     unlistenThinkEnd = await window.__TAURI__.event.listen('chat-think-end', () => {
       debugLog('THINK-END', '思考标签结束，清空"思考中…"');
       bubbleText.textContent = ''; // 清空"思考中…"
-      copyBtn.style.display = 'block'; // 显示复制按钮
+      bubbleActions.style.display = 'none'; // 等第一个token再显示
+      // 位置不需要更新（bottom 锚定，内容自动收缩）
     });
 
     // 监听流式结束事件
@@ -905,8 +1007,8 @@ async function sendMessage() {
     });
 
     // 调用 Rust 后端的 chat 命令
-    debugLog('SEND', `发送消息: "${text}"`);
-    const sessionId = await invoke('chat', { message: text, sessionId: currentSessionId });
+    debugLog('SEND', `发送消息: "${finalText}", 附件: ${attachmentsToSend.length} 个`);
+    const sessionId = await invoke('chat', { message: finalText, sessionId: currentSessionId, attachments: attachmentsToSend });
     debugLog('BACKEND', `收到 session ID: ${sessionId}`);
 
     // 等待流式结束信号
@@ -930,6 +1032,7 @@ async function sendMessage() {
     // 自动朗读 AI 回复
     if (fullReply) {
       try {
+        console.log('[TTS] 准备朗读，文字长度:', fullReply.length, '内容前100字:', JSON.stringify(fullReply.slice(0, 100)));
         await invoke('stop_speaking'); // 停止上一条朗读
         await invoke('speak_text', { text: fullReply });
         isSpeaking = true;
@@ -981,6 +1084,7 @@ voiceBtn.addEventListener('click', async (e) => {
     const text = bubble.dataset.fullText;
     if (!text) return;
     try {
+      console.log('[TTS-BTN] 手动朗读，文字长度:', text.length, '内容前100字:', JSON.stringify(text.slice(0, 100)));
       await invoke('speak_text', { text });
       isSpeaking = true;
       voiceBtn.textContent = '⏹';
@@ -1000,10 +1104,10 @@ voiceBtn.addEventListener('click', async (e) => {
   }
 });
 
-// 气泡隐藏时自动停止朗读
+// 气泡隐藏时重置朗读状态（但不停止 say 进程，让它播完）
 bubble.addEventListener('animationend', () => {
   if (!bubble.classList.contains('showing') && isSpeaking) {
-    invoke('stop_speaking').catch(() => {});
+    // 只重置 UI 状态，不调用 stop_speaking，避免 40 秒后把未读完的朗读截断
     isSpeaking = false;
     voiceBtn.textContent = '🔊';
     voiceBtn.title = '语音';
@@ -1147,23 +1251,11 @@ settingsBtn.addEventListener('click', async () => {
 // ── 右键菜单：切换人物 ────────────────────────────────────────────────
 switchCharacterBtn.addEventListener('click', async () => {
   try {
-    // 从后端获取人物列表
-    const url = `${BACKEND_URL}/api/characters/list`;
-    console.log(`[menu] 正在加载人物列表...`);
-    console.log(`[menu] 环境: ${typeof window.__TAURI__ !== 'undefined' ? 'Tauri桌面应用' : '网页浏览器'}`);
-    console.log(`[menu] BACKEND_URL: ${BACKEND_URL}`);
-    console.log(`[menu] 完整请求URL: ${url}`);
+    // 从后端获取人物列表（走 Rust invoke 绕过 CSP）
     showBubble('加载人物列表中...', false, false);
-    // 3秒后自动隐藏加载提示
     setTimeout(() => { if (bubble.classList.contains('showing')) bubble.classList.remove('showing'); }, 3000);
 
-    const response = await fetch(url);
-    console.log(`[menu] 收到响应: status=${response.status}, ok=${response.ok}`);
-
-    if (!response.ok) {
-      throw new Error(`HTTP ${response.status}: 无法加载人物列表`);
-    }
-    const data = await response.json();
+    const data = await invoke('get_characters');
     console.log(`[menu] 加载成功，共 ${data.characters.length} 个人物`);
 
     // 清空并生成子菜单项
@@ -1229,8 +1321,9 @@ quitBtn.addEventListener('click', () => invoke('quit_app'));
 async function waitForBackend(maxRetries = 30) {
   for (let i = 0; i < maxRetries; i++) {
     try {
-      const res = await fetch(`${BACKEND_URL}/api/characters/list`, { signal: AbortSignal.timeout(1500) });
-      if (res.ok) return true;
+      // 用 Rust invoke 检查端口，避免前端 fetch 被 CSP 拦截
+      const ready = await invoke('check_backend_ready');
+      if (ready) return true;
     } catch (e) {
       // 还没好，继续等
     }
@@ -1244,10 +1337,17 @@ async function waitForBackend(maxRetries = 30) {
 async function initializeApp() {
   initCanvas();
 
-  // 等待 huan-ui 就绪再初始化
+  // 等待 huan-ui 就绪再初始化 —— 期间禁用输入并显示启动提示
+  msgInput.disabled = true;
+  msgInput.placeholder = '后台启动中，请稍候...';
+
   const backendReady = await waitForBackend();
+
+  msgInput.disabled = false;
+
   if (!backendReady) {
     console.warn('[init] ⚠️  huan-ui 30秒内未就绪，跳过动画加载');
+    msgInput.placeholder = '后台启动失败，请重启应用';
     await initializeSession();
     return;
   }

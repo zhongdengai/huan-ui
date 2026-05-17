@@ -1196,11 +1196,9 @@ def _handle_llm_config_test(handler, body):
 
 def _handle_chat_sync(handler, body):
     """Fallback synchronous chat endpoint (POST /api/chat). Used by desktop app."""
-    from api.llm_config import is_configured, load_llm_config, chat_with_config
-
-    # ── 优先使用用户配置的 LLM (user/config.json) ────────────────────────────
-    if is_configured():
-        return _handle_chat_direct(handler, body)
+    # 注意：不在这里走 _handle_chat_direct，否则会绕过 Hermes，
+    # 导致所有角色失去工具调用（联网、操作电脑等）能力。
+    # AI 配置页面的直连 LLM 功能暂时保留配置，但路由不走这里。
 
     from api.config import _get_session_agent_lock
     session_id = body.get('session_id', '')
@@ -1212,6 +1210,7 @@ def _handle_chat_sync(handler, body):
         return bad(handler, f'Session not found: {session_id}', 404)
     msg = str(body.get('message', '')).strip()
     if not msg: return j(handler, {'error': 'empty message'}, status=400)
+    attachments = [str(a) for a in (body.get('attachments') or [])][:10]
     workspace = Path(body.get('workspace') or s.workspace).expanduser().resolve()
     s.workspace = str(workspace); s.model = body.get('model') or s.model
     from api.streaming import _ENV_LOCK
@@ -1255,9 +1254,10 @@ def _handle_chat_sync(handler, body):
                 "write_file, read_file, search_files, terminal workdir, and patch. "
                 "Never fall back to a hardcoded path when this tag is present."
             )
-            from api.streaming import _sanitize_messages_for_api
+            from api.streaming import _sanitize_messages_for_api, _preprocess_attachments
+            vision_enriched = _preprocess_attachments(attachments, workspace) if attachments else ""
             result = agent.run_conversation(
-                user_message=workspace_ctx + msg,
+                user_message=workspace_ctx + vision_enriched + msg,
                 system_message=workspace_system_msg,
                 conversation_history=_sanitize_messages_for_api(s.messages),
                 task_id=s.session_id,
@@ -1678,7 +1678,14 @@ def _handle_session_import(handler, body):
 # ── Character management helpers ──────────────────────────────────────────────
 
 def _get_characters_dir():
-    """Get the characters directory, resolving it relative to the webui root."""
+    """Get the characters directory.
+    Prefer HERMES_WEBUI_USER_DIR env var (set by huanhuan app to Application Support),
+    otherwise fall back to REPO_ROOT/user/characters for dev mode.
+    """
+    import os
+    user_dir_override = os.environ.get('HERMES_WEBUI_USER_DIR')
+    if user_dir_override:
+        return (Path(user_dir_override) / 'characters').resolve()
     try:
         from api.config import REPO_ROOT
         chars_dir = REPO_ROOT / 'user' / 'characters'

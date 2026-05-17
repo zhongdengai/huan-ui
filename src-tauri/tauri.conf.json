@@ -7,6 +7,9 @@
   },
   "app": {
     "withGlobalTauri": true,
+    "security": {
+      "csp": "default-src 'self' tauri: asset: https://asset.localhost; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: http://127.0.0.1:8868; connect-src 'self' http://127.0.0.1:8868"
+    },
     "windows": [
       {
         "label": "main",
@@ -19,6 +22,18 @@
         "skipTaskbar": true,
         "focus": true,
         "visible": true
+      },
+      {
+        "label": "setup",
+        "url": "setup.html",
+        "width": 500,
+        "height": 600,
+        "resizable": false,
+        "decorations": true,
+        "transparent": false,
+        "center": true,
+        "visible": false,
+        "title": "欢欢 · 初始设置"
       }
     ],
     "macOSPrivateApi": true
@@ -34,7 +49,19 @@
       "icons/icon.icns"
     ],
     "resources": {
-      "scripts/stt_server.py": "scripts/stt_server.py"
+      "scripts/stt_server.py": "scripts/stt_server.py",
+      "../huan-ui/server.py": "huan-ui/server.py",
+      "../huan-ui/requirements.txt": "huan-ui/requirements.txt",
+      "../huan-ui/api/**/*": "huan-ui/api/",
+      "../huan-ui/static/**/*": "huan-ui/static/",
+      "default-characters/huanhuan/config.json": "default-characters/huanhuan/config.json",
+      "default-characters/huanhuan/frames/**/*": "default-characters/huanhuan/frames/",
+      "default-characters/wally/config.json": "default-characters/wally/config.json",
+      "default-characters/wally/frames/**/*": "default-characters/wally/frames/",
+      "default-characters/xuebao/config.json": "default-characters/xuebao/config.json",
+      "default-characters/xuebao/frames/**/*": "default-characters/xuebao/frames/",
+      "default-characters/test/config.json": "default-characters/test/config.json",
+      "default-characters/test/frames/**/*": "default-characters/test/frames/"
     },
     "macOS": {
       "infoPlist": "Info.plist",
