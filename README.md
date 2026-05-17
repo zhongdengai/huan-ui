@@ -163,4 +163,5 @@ MIT License — 详见 [LICENSE](LICENSE)
 
 - [Tauri](https://tauri.app) — 跨平台桌面应用框架
 - [Hermes Agent](https://github.com/nousresearch/hermes) — AI 智能体引擎
+- [hermes-webui](https://github.com/nesquena/hermes-webui) — huan-ui 基于此项目修改而来（MIT License）
 - [OpenRouter](https://openrouter.io) — 多模型 AI API 网关
