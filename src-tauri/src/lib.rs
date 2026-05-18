@@ -133,6 +133,7 @@ impl SttServer {
             .unwrap_or("python3");
         let mut child = std::process::Command::new(python)
             .arg(&self.script_path)
+            .env("PATH", "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin")
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::null())
@@ -148,7 +149,7 @@ impl SttServer {
         reader.read_line(&mut line).map_err(|e| format!("等待 STT 就绪失败: {}", e))?;
         let line = line.trim();
         if line == "IMPORT_ERROR" {
-            return Err("SpeechRecognition 未安装，请运行: pip3 install --break-system-packages SpeechRecognition".into());
+            return Err("mlx-whisper 未安装，请运行: pip3 install --break-system-packages mlx-whisper".into());
         }
         if line != "READY" {
             return Err(format!("STT 服务启动异常: {}", line));
