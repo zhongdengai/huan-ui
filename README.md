@@ -260,7 +260,7 @@ auxiliary:
 A: Make sure Hermes is installed: `hermes --version`
 
 **Q: Voice recognition not working?**  
-A: Internet connection required (uses Google's free STT API). Also check microphone permissions.
+A: Check microphone permissions. The first use will auto-download the Whisper model (~75MB); after that it works fully offline.
 
 **Q: Image recognition failing?**  
 A: Check your OpenRouter API key. Free models have a 50 requests/day limit.
