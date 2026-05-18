@@ -34,7 +34,8 @@ macOS 桌面 AI 宠物。常驻屏幕角落，随时待命。
 - 💬 **气泡对话** — 半透明气泡显示 AI 回复，自动消失
 - 🎤 **语音输入** — 点击麦克风录音，自动识别转文字
 - 🔊 **语音朗读** — macOS 原生 TTS 朗读 AI 回复
-- 📎 **图片识别** — 上传图片/截图，AI 理解内容后回答
+- 📎 **图片识别** — 上传图片/截图，AI 理解内容后回答（使用 MiniMax VLM，无需额外 API Key）
+- 🎨 **图片生成** — 告诉角色"帮我画一张…"，调用 MiniMax 生图模型，自动保存到下载
 - 🧠 **独立记忆** — 每个角色有独立的对话记忆和人格
 - 🖱️ **随意拖动** — 窗口和气泡均可自由拖动定位
 - ⚙️ **首次向导** — 引导配置 AI 供应商（MiniMax、OpenAI、Claude 等）
@@ -102,19 +103,14 @@ npm run dev
 
 默认每个角色只含一张静态图。完整动画帧包可从 [Releases](https://github.com/zhongdengai/huan-ui/releases) 下载，解压到对应角色的 `frames/` 目录后重启即可。
 
-## 图片识别
+## 图片识别 & 图片生成
 
-需要 [OpenRouter](https://openrouter.io) 免费 API Key：
+图片识别和图片生成均使用 **MiniMax**，与对话共享同一 API Key，**无需额外配置**。
 
-```yaml
-# ~/.hermes/config.yaml
-auxiliary:
-  vision:
-    provider: openrouter
-    api_key: sk-or-v1-...
-```
+- **图片识别**：点击 📎 上传图片或截图，AI 自动描述并回答
+- **图片生成**：直接告诉角色"帮我画一张…"，图片保存至下载文件夹并自动打开
 
-或设置环境变量：`export OPENROUTER_API_KEY=sk-or-v1-...`
+> 如需保留 OpenRouter 作为备用视觉通道，可在 `~/.hermes/config.yaml` 中配置 `auxiliary.vision`；MiniMax 优先级更高。
 
 ## 常见问题
 
@@ -125,7 +121,7 @@ A：检查 Hermes 是否已安装：`hermes --version`
 A：需要联网（使用 Google 免费 STT），并确认麦克风权限已授权
 
 **Q：图片识别返回失败？**  
-A：检查 OpenRouter API Key 是否配置；免费模型每天 50 次上限
+A：检查 MiniMax API Key 是否正确配置（首页设置 → AI 供应商）；图片识别与对话共用同一 Key，配置后无需额外操作
 
 **Q：动画不流畅？**  
 A：默认只有静态图，从 Releases 下载动画帧包解压即可
@@ -193,7 +189,8 @@ The real dog still doesn't listen.
 - 💬 **Speech bubbles** — semi-transparent bubble shows AI replies, auto-dismisses
 - 🎤 **Voice input** — tap the mic, speak, text appears automatically
 - 🔊 **Voice playback** — macOS native TTS reads AI responses aloud
-- 📎 **Image recognition** — attach screenshots or photos, AI understands and responds
+- 📎 **Image recognition** — attach screenshots or photos, AI understands and responds (powered by MiniMax VLM, no extra API key needed)
+- 🎨 **Image generation** — tell the character "draw me a…", MiniMax image-01 generates it and saves to Downloads
 - 🧠 **Independent memory** — each character has its own conversation history and personality
 - 🖱️ **Freely draggable** — window and bubble can be repositioned anywhere
 - ⚙️ **First-run wizard** — guided setup for AI providers (MiniMax, OpenAI, Claude, etc.)
@@ -242,17 +239,14 @@ Place character data in `huan-ui/user/characters/{id}/`:
 
 Animation frame packs can be downloaded from [Releases](https://github.com/zhongdengai/huan-ui/releases). Extract to the character's `frames/` folder and restart.
 
-## Image Recognition
+## Image Recognition & Generation
 
-Requires a free [OpenRouter](https://openrouter.io) API key:
+Both features are powered by **MiniMax** and share the same API key you configured during setup — **no extra configuration needed**.
 
-```yaml
-# ~/.hermes/config.yaml
-auxiliary:
-  vision:
-    provider: openrouter
-    api_key: sk-or-v1-...
-```
+- **Image recognition**: click 📎 to attach an image or screenshot; AI describes and responds
+- **Image generation**: just tell the character "draw me a…"; the image is saved to your Downloads folder and opened automatically
+
+> If you'd like to keep OpenRouter as a fallback vision provider, you can still set `auxiliary.vision` in `~/.hermes/config.yaml`; MiniMax takes priority.
 
 ## FAQ
 
@@ -263,7 +257,7 @@ A: Make sure Hermes is installed: `hermes --version`
 A: Check microphone permissions. The first use will auto-download the Whisper model (~75MB); after that it works fully offline.
 
 **Q: Image recognition failing?**  
-A: Check your OpenRouter API key. Free models have a 50 requests/day limit.
+A: Make sure your MiniMax API key is configured correctly in the settings wizard. Image recognition uses the same key as chat — no separate setup required.
 
 **Q: Animation looks choppy or static?**  
 A: Only a single static frame is included by default. Download the animation frame pack from Releases.
