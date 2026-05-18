@@ -104,7 +104,7 @@ def load_llm_config() -> dict:
 
 
 def save_llm_config(llm_cfg: dict) -> None:
-    """Save llm section to user/config.json."""
+    """Save llm section to user/config.json, then sync to Hermes config."""
     _USER_CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
     existing = {}
     if _USER_CONFIG_PATH.exists():
@@ -117,6 +117,152 @@ def save_llm_config(llm_cfg: dict) -> None:
     with open(_USER_CONFIG_PATH, 'w', encoding='utf-8') as f:
         json.dump(existing, f, ensure_ascii=False, indent=2)
     print(f'[llm_config] saved provider={llm_cfg.get("provider")}', flush=True)
+    # Sync to Hermes so the agent picks up the new key/provider immediately
+    try:
+        sync_to_hermes(llm_cfg)
+    except Exception as _e:
+        print(f'[llm_config] hermes sync warning: {_e}', flush=True)
+
+
+# ── UI provider → Hermes mapping ──────────────────────────────────────────────
+# Each entry: (hermes_provider, env_var_for_key, env_var_for_base_url)
+_PROVIDER_MAP = {
+    'minimax':  ('minimax-cn',  'MINIMAX_CN_API_KEY',  'MINIMAX_CN_BASE_URL'),
+    'claude':   ('anthropic',   'ANTHROPIC_API_KEY',   None),
+    'openai':   ('openai',      'OPENAI_API_KEY',      None),
+    'deepseek': ('deepseek',    'DEEPSEEK_API_KEY',    None),
+    'qwen':     ('qwen',        'DASHSCOPE_API_KEY',   None),
+    'gemini':   ('google',      'GOOGLE_API_KEY',      None),
+    'ollama':   ('openai',      None,                  None),   # local, no key
+    'custom':   ('openai',      None,                  None),   # generic openai-compat
+}
+
+
+def _update_env_file(path: Path, updates: dict) -> None:
+    """Update or append key=value pairs in a .env file (no quotes)."""
+    lines = []
+    if path.exists():
+        try:
+            lines = path.read_text(encoding='utf-8').splitlines()
+        except Exception:
+            pass
+    updated_keys = set()
+    new_lines = []
+    for line in lines:
+        stripped = line.strip()
+        if stripped.startswith('#') or '=' not in stripped:
+            new_lines.append(line)
+            continue
+        key = stripped.split('=', 1)[0].strip()
+        if key in updates:
+            new_lines.append(f'{key}={updates[key]}')
+            updated_keys.add(key)
+        else:
+            new_lines.append(line)
+    for key, val in updates.items():
+        if key not in updated_keys:
+            new_lines.append(f'{key}={val}')
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text('\n'.join(new_lines) + '\n', encoding='utf-8')
+
+
+def _update_hermes_config_yaml(config_path: Path, hermes_provider: str,
+                               model: str, base_url: str) -> None:
+    """Update the model section in a Hermes config.yaml in-place using regex."""
+    import re
+    if not config_path.exists():
+        return
+    text = config_path.read_text(encoding='utf-8')
+
+    def replace_or_append_in_model_block(text, key, value):
+        # Try to replace existing key inside the 'model:' block
+        pattern = rf'(model:\s*\n(?:[ \t]+\S[^\n]*\n)*?[ \t]+{re.escape(key)}:[ \t]*)[^\n]*'
+        replacement = rf'\g<1>{value}'
+        new_text, n = re.subn(pattern, replacement, text)
+        if n:
+            return new_text
+        # Key not found in model block — inject it after 'model:' line
+        return re.sub(r'(model:\s*\n)', rf'\1  {key}: {value}\n', text)
+
+    if hermes_provider:
+        text = replace_or_append_in_model_block(text, 'provider', hermes_provider)
+    if model:
+        text = replace_or_append_in_model_block(text, 'default', model)
+    if base_url:
+        text = replace_or_append_in_model_block(text, 'base_url', base_url)
+
+    config_path.write_text(text, encoding='utf-8')
+
+
+def sync_to_hermes(llm_cfg: dict) -> None:
+    """Sync llm config to Hermes .env and config.yaml so the agent uses it.
+
+    This updates:
+      1. ~/.hermes/.env  (global)
+      2. ~/.hermes/profiles/{active_profile}/.env
+      3. ~/.hermes/profiles/{active_profile}/config.yaml  (model section)
+    """
+    provider = llm_cfg.get('provider', '')
+    api_key  = llm_cfg.get('api_key', '').strip()
+    base_url = llm_cfg.get('base_url', '').strip()
+    model    = llm_cfg.get('model_id', '').strip()
+
+    hermes_provider, env_key, env_base_url_key = _PROVIDER_MAP.get(
+        provider, (None, None, None)
+    )
+    if not hermes_provider:
+        print(f'[llm_config] unknown provider "{provider}", skipping hermes sync', flush=True)
+        return
+
+    home = Path(_os.environ.get('HOME', str(Path.home())))
+    hermes_home = home / '.hermes'
+
+    # Build env updates
+    env_updates = {}
+    if env_key and api_key:
+        env_updates[env_key] = api_key
+    if env_base_url_key and base_url:
+        env_updates[env_base_url_key] = base_url
+
+    # 1. Update global ~/.hermes/.env
+    if env_updates:
+        _update_env_file(hermes_home / '.env', env_updates)
+        print(f'[llm_config] updated ~/.hermes/.env: {list(env_updates.keys())}', flush=True)
+
+    # 2. Update all profile .env files
+    profiles_dir = hermes_home / 'profiles'
+    if profiles_dir.is_dir():
+        for profile_dir in profiles_dir.iterdir():
+            if profile_dir.is_dir():
+                env_file = profile_dir / '.env'
+                if env_updates:
+                    _update_env_file(env_file, env_updates)
+
+        # 3. Update active profile's config.yaml model section
+        try:
+            from api.profiles import get_active_hermes_home
+            active_home = get_active_hermes_home()
+        except Exception:
+            active_home = hermes_home
+
+        config_yaml = active_home / 'config.yaml'
+        _update_hermes_config_yaml(
+            config_yaml,
+            hermes_provider=hermes_provider,
+            model=model,
+            base_url=base_url,
+        )
+        # Also update all profile config.yamls
+        if profiles_dir.is_dir():
+            for profile_dir in profiles_dir.iterdir():
+                if profile_dir.is_dir():
+                    _update_hermes_config_yaml(
+                        profile_dir / 'config.yaml',
+                        hermes_provider=hermes_provider,
+                        model=model,
+                        base_url=base_url,
+                    )
+        print(f'[llm_config] synced hermes: provider={hermes_provider} model={model}', flush=True)
 
 
 def is_configured() -> bool:

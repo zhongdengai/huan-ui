@@ -25,18 +25,117 @@ from api.config import (
 _ENV_LOCK = threading.Lock()
 
 
-# Free vision models to try in order (first working one wins)
+# Free vision models to try in order (first working one wins, used as fallback)
 _VISION_FREE_MODELS = [
     "nvidia/nemotron-nano-12b-v2-vl:free",
     "google/gemma-4-31b-it:free",
     "google/gemma-4-26b-a4b-it:free",
 ]
 
+_VISION_PROMPT = (
+    "请用中文详细描述这张图片的内容，包括文字、代码、数据、物体、人物、布局、颜色等所有可见信息。"
+    " If the image is in English or code, also describe it fully."
+)
+
+
+def _get_minimax_vlm_key() -> tuple[str, str]:
+    """Return (api_key, api_host) for MiniMax VLM calls.
+
+    Priority:
+      1. ~/Library/Application Support/huanhuan/user/config.json  (set by setup wizard)
+      2. HERMES_WEBUI_USER_DIR env var pointing to a config.json
+
+    Returns (api_key, api_host) tuple; empty strings if not found.
+    """
+    import platform
+    candidates = []
+
+    # 1. macOS app user dir (primary — written by the setup wizard)
+    if platform.system() == "Darwin":
+        candidates.append(
+            Path.home() / "Library" / "Application Support" / "huanhuan" / "user" / "config.json"
+        )
+
+    # 2. HERMES_WEBUI_USER_DIR override (for dev mode)
+    webui_user_dir = os.environ.get("HERMES_WEBUI_USER_DIR", "")
+    if webui_user_dir:
+        candidates.append(Path(webui_user_dir) / "config.json")
+
+    for cfg_path in candidates:
+        try:
+            if not cfg_path.exists():
+                continue
+            cfg = json.loads(cfg_path.read_text(encoding="utf-8"))
+            key = cfg.get("llm", {}).get("api_key", "")
+            host = cfg.get("llm", {}).get("base_url", "https://api.minimaxi.com/v1")
+            # Strip /v1 suffix — we build the full path in _analyze_image_minimax
+            host = host.rstrip("/")
+            if host.endswith("/v1"):
+                host = host[:-3]
+            if key and key.startswith("sk-"):
+                return key, host
+        except Exception:
+            continue
+
+    return "", ""
+
+
+def _analyze_image_minimax(image_path: Path, api_key: str,
+                           api_host: str = "https://api.minimaxi.com") -> str:
+    """Use MiniMax /v1/coding_plan/vlm endpoint for vision analysis.
+
+    This is the same endpoint used by the MiniMax Coding Plan MCP plugin
+    and ClawX. Accepts base64 image_url directly.
+    """
+    import base64
+    import urllib.request
+
+    mime_map = {'.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.png': 'image/png',
+                '.gif': 'image/gif', '.webp': 'image/webp', '.bmp': 'image/bmp'}
+    mime = mime_map.get(image_path.suffix.lower(), 'image/png')
+
+    data = image_path.read_bytes()
+    b64 = base64.b64encode(data).decode('ascii')
+    data_url = f"data:{mime};base64,{b64}"
+
+    payload = json.dumps({
+        "prompt": _VISION_PROMPT,
+        "image_url": data_url,
+    }).encode('utf-8')
+    url = api_host.rstrip("/") + "/v1/coding_plan/vlm"
+    req = urllib.request.Request(
+        url,
+        data=payload,
+        headers={
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+            "MM-API-Source": "Minimax-MCP",
+        },
+        method="POST",
+    )
+    with urllib.request.urlopen(req, timeout=60) as resp:
+        result = json.loads(resp.read().decode('utf-8'))
+
+    # Check API-level error
+    base_resp = result.get("base_resp", {})
+    if base_resp and base_resp.get("status_code") != 0:
+        raise RuntimeError(f"MiniMax VLM error {base_resp.get('status_code')}: {base_resp.get('status_msg')}")
+
+    # Extract content field
+    text = result.get("content") or result.get("result") or result.get("text") or ""
+    if not text:
+        choices = result.get("choices", [])
+        if choices:
+            text = choices[0].get("message", {}).get("content", "")
+    if text:
+        return str(text)
+    raise RuntimeError(f"MiniMax VLM returned unexpected format: {list(result.keys())}")
+
+
 def _analyze_image_openrouter(image_path: Path, api_key: str) -> str:
     """Direct OpenRouter vision call, tries free models in order until one works.
 
-    Bypasses the Hermes auxiliary_client chain which routes to MiniMax
-    (the main chat provider) — MiniMax does not support base64 image_url.
+    Used as fallback when MiniMax VLM is unavailable.
     """
     import base64
     import urllib.request
@@ -50,19 +149,13 @@ def _analyze_image_openrouter(image_path: Path, api_key: str) -> str:
     b64 = base64.b64encode(data).decode('ascii')
     data_url = f"data:{mime};base64,{b64}"
 
-    prompt = (
-        "Describe everything visible in this image in thorough detail. "
-        "Include any text, code, data, objects, people, layout, colors, "
-        "and any other notable visual information."
-    )
-
     last_err = None
     for model in _VISION_FREE_MODELS:
         payload = json.dumps({
             "model": model,
             "messages": [{"role": "user", "content": [
                 {"type": "image_url", "image_url": {"url": data_url}},
-                {"type": "text", "text": prompt},
+                {"type": "text", "text": _VISION_PROMPT},
             ]}],
             "max_tokens": 1024,
         }).encode('utf-8')
@@ -98,29 +191,37 @@ def _analyze_image_openrouter(image_path: Path, api_key: str) -> str:
 def _preprocess_attachments(attachments, workspace):
     """Analyze attached images and return enriched context text.
 
-    Uses direct OpenRouter API (google/gemma-4-31b-it:free) for vision,
-    which avoids the auxiliary_client auto chain that incorrectly routes
-    to MiniMax (the main provider) — MiniMax rejects base64 image_url.
-    Falls back to the Hermes vision_analyze_tool if OpenRouter key is absent.
+    Priority:
+      1. MiniMax VLM endpoint (/v1/coding_plan/vlm) — uses the minimax-cn key
+         from the active profile's auth.json; no rate limit issues.
+      2. OpenRouter free models — fallback if MiniMax key is unavailable.
+      3. Hermes vision_analyze_tool — last resort.
     """
     if not attachments:
         return ""
 
-    # Prefer OpenRouter API key from Hermes config, then env var
+    # 1. Try MiniMax VLM key (primary, no rate limits)
+    mm_api_key, mm_api_host = _get_minimax_vlm_key()
+    if mm_api_key:
+        print("[webui] vision: MiniMax VLM key found, will use as primary", flush=True)
+    else:
+        print("[webui] vision: no MiniMax key, checking OpenRouter...", flush=True)
+
+    # 2. OpenRouter as fallback
     or_api_key = ""
-    try:
-        from hermes_cli.config import read_raw_config
-        _cfg = read_raw_config()
-        _aux_vis = _cfg.get("auxiliary", {}).get("vision", {})
-        if _aux_vis.get("provider") == "openrouter" and _aux_vis.get("api_key"):
-            or_api_key = _aux_vis["api_key"]
-    except Exception:
-        pass
-    if not or_api_key:
-        or_api_key = os.environ.get("OPENROUTER_API_KEY", "")
-    # No key found — vision will fail gracefully below
-    if not or_api_key:
-        print("[webui] vision: no OPENROUTER_API_KEY found, skipping vision", flush=True)
+    if not mm_api_key:
+        try:
+            from hermes_cli.config import read_raw_config
+            _cfg = read_raw_config()
+            _aux_vis = _cfg.get("auxiliary", {}).get("vision", {})
+            if _aux_vis.get("provider") == "openrouter" and _aux_vis.get("api_key"):
+                or_api_key = _aux_vis["api_key"]
+        except Exception:
+            pass
+        if not or_api_key:
+            or_api_key = os.environ.get("OPENROUTER_API_KEY", "")
+        if not or_api_key:
+            print("[webui] vision: no OpenRouter key either, vision unavailable", flush=True)
 
     ws = Path(workspace)
     enriched_parts = []
@@ -132,16 +233,31 @@ def _preprocess_attachments(attachments, workspace):
             continue
         size_kb = p.stat().st_size // 1024
         print(f"[webui] vision: analyzing {p.name} ({size_kb}KB)...", flush=True)
-        try:
-            description = _analyze_image_openrouter(p, or_api_key)
+
+        description = None
+
+        # Try MiniMax VLM first
+        if mm_api_key:
+            try:
+                description = _analyze_image_minimax(p, mm_api_key, mm_api_host)
+                print(f"[webui] vision: {p.name} analyzed via MiniMax VLM", flush=True)
+            except Exception as e:
+                print(f"[webui] vision: MiniMax VLM failed ({e}), trying OpenRouter...", flush=True)
+
+        # Try OpenRouter as fallback
+        if description is None and or_api_key:
+            try:
+                description = _analyze_image_openrouter(p, or_api_key)
+                print(f"[webui] vision: {p.name} analyzed via OpenRouter", flush=True)
+            except Exception as e:
+                print(f"[webui] vision: OpenRouter failed ({e}), trying auxiliary_client...", flush=True)
+
+        if description is not None:
             enriched_parts.append(
-                f"[The user attached an image. Here's what it contains:\n{description}]\n"
-                f"[If you need a closer look, use vision_analyze with image_url: {p}]"
+                f"[The user attached an image. Here's what it contains:\n{description}]"
             )
-            print(f"[webui] vision: {p.name} analyzed successfully via OpenRouter", flush=True)
-        except Exception as e:
-            print(f"[webui] vision: OpenRouter failed ({e}), trying auxiliary_client...", flush=True)
-            # Fallback: try Hermes auxiliary vision tool
+        else:
+            # Last resort: Hermes auxiliary vision tool
             try:
                 import asyncio as _asyncio
                 from tools.vision_tools import vision_analyze_tool as _vat
@@ -151,8 +267,7 @@ def _preprocess_attachments(attachments, workspace):
                 result = json.loads(result_json)
                 if result.get("success"):
                     enriched_parts.append(
-                        f"[The user attached an image. Here's what it contains:\n{result.get('analysis', '')}]\n"
-                        f"[If you need a closer look, use vision_analyze with image_url: {p}]"
+                        f"[The user attached an image. Here's what it contains:\n{result.get('analysis', '')}]"
                     )
                 else:
                     enriched_parts.append(
@@ -164,7 +279,7 @@ def _preprocess_attachments(attachments, workspace):
                     f"[The user attached an image ({p.name}). "
                     f"You can examine it with vision_analyze using image_url: {p}]"
                 )
-                print(f"[webui] vision: fallback also failed: {e2}", flush=True)
+                print(f"[webui] vision: all vision methods failed: {e2}", flush=True)
 
     if not enriched_parts:
         return ""
@@ -178,6 +293,121 @@ except ImportError:
     AIAgent = None
 from api.models import get_session, title_from
 from api.workspace import set_last_workspace
+
+
+# ── MiniMax 生图工具（已改为 skill 方式，此处保留备用不再调用） ───────────────
+def _register_minimax_image_generate():
+    """把 image_generate 工具替换成 MiniMax /v1/image_generation 实现。
+
+    在首次创建 AIAgent 之前调用一次即可。
+    """
+    try:
+        from tools.registry import registry, tool_error
+    except ImportError:
+        return  # hermes-agent 不在 path，跳过
+
+    def _minimax_generate(args, **_kw):
+        import base64, datetime, subprocess, urllib.request as _req
+        prompt = args.get('prompt', '').strip()
+        if not prompt:
+            return tool_error('prompt 不能为空')
+
+        aspect_map = {'landscape': '16:9', 'portrait': '9:16',
+                      'square': '1:1', '16:9': '16:9',
+                      '1:1': '1:1', '4:3': '4:3', '3:2': '3:2'}
+        aspect = aspect_map.get(args.get('aspect_ratio', 'square'), '1:1')
+
+        # 读取 key
+        key, host = _get_minimax_vlm_key()
+        if not key:
+            return tool_error('未找到 MiniMax API Key，请在设置里保存一次')
+
+        import json as _json
+        payload = _json.dumps({
+            'model': 'image-01',
+            'prompt': prompt,
+            'response_format': 'base64',
+            'n': 1,
+            'aspect_ratio': aspect,
+        }).encode()
+        url = host.rstrip('/') + '/v1/image_generation'
+        request = _req.Request(
+            url, data=payload,
+            headers={'Authorization': f'Bearer {key}', 'Content-Type': 'application/json'},
+            method='POST',
+        )
+        try:
+            with _req.urlopen(request, timeout=120) as resp:
+                data = _json.loads(resp.read().decode())
+        except Exception as e:
+            return tool_error(f'MiniMax 生图请求失败: {e}')
+
+        base_resp = data.get('base_resp', {})
+        if base_resp.get('status_code', 0) != 0:
+            return tool_error(f"MiniMax 生图失败: {base_resp.get('status_msg')}")
+
+        imgs = data.get('data', {}).get('image_base64', [])
+        if not imgs:
+            return tool_error('MiniMax 没有返回图片数据')
+
+        # 保存到 Downloads
+        ts = datetime.datetime.now().strftime('%Y%m%d_%H%M%S')
+        save_path = Path.home() / 'Downloads' / f'huanhuan_{ts}.png'
+        save_path.write_bytes(base64.b64decode(imgs[0]))
+
+        # macOS 直接打开预览
+        try:
+            subprocess.Popen(['open', str(save_path)])
+        except Exception:
+            pass
+
+        return _json.dumps({
+            'success': True,
+            'file': str(save_path),
+            'message': f'图片已生成并保存到 {save_path}，同时已用预览打开。',
+        }, ensure_ascii=False)
+
+    _schema = {
+        'name': 'image_generate',
+        'description': (
+            '使用 MiniMax image-01 模型根据提示词生成图片。'
+            '生成后自动保存到 ~/Downloads/ 并打开预览。'
+            '生成完成后告诉用户图片已保存的路径。'
+        ),
+        'parameters': {
+            'type': 'object',
+            'properties': {
+                'prompt': {
+                    'type': 'string',
+                    'description': '详细的图片描述提示词，支持中文和英文。',
+                },
+                'aspect_ratio': {
+                    'type': 'string',
+                    'enum': ['square', 'landscape', 'portrait', '16:9', '4:3'],
+                    'description': '图片比例：square(1:1) / landscape(16:9) / portrait(9:16)，默认 square。',
+                    'default': 'square',
+                },
+            },
+            'required': ['prompt'],
+        },
+    }
+    registry.register(
+        name='image_generate',
+        toolset='cli',
+        schema=_schema,
+        handler=_minimax_generate,
+        check_fn=None,
+        requires_env=[],
+        is_async=False,
+        description=_schema['description'],
+        emoji='🎨',
+    )
+    print('[webui] image_generate → MiniMax image-01 已注册', flush=True)
+
+
+# 不在模块加载时注册——要在 AIAgent 创建之后再覆盖，
+# 否则 image_generation_tool.py 的懒加载会把我们的注册覆盖掉。
+# 实际调用点：_run_agent_streaming() 创建 AIAgent 之后。
 
 # Fields that are safe to send to LLM provider APIs.
 # Everything else (attachments, timestamp, _ts, etc.) is display-only
